@@ -1,0 +1,3 @@
+[tools]
+"cargo:cargo-llvm-cov" = "latest"
+rust = "nightly"

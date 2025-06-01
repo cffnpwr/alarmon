@@ -1,0 +1,13 @@
+[package]
+name = "tcpip"
+description = "TCP/IP packet parsing library"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
