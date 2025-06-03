@@ -95,6 +95,13 @@ impl TryFrom<Vec<u8>> for EthernetFrame {
         EthernetFrame::try_from(value.as_slice())
     }
 }
+impl TryFrom<&Vec<u8>> for EthernetFrame {
+    type Error = EthernetFrameError;
+
+    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
+        EthernetFrame::try_from(value.as_slice())
+    }
+}
 impl TryFrom<EthernetFrame> for Vec<u8> {
     type Error = EthernetFrameError;
 
