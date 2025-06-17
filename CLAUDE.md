@@ -26,6 +26,7 @@ The main application currently captures Ethernet frames, filters for IPv4 packet
 ## Development Commands
 
 ### Build and Run
+
 ```bash
 # Build the project
 cargo build
@@ -35,9 +36,13 @@ cargo build --release
 
 # Run the main application (requires network interface access)
 cargo run
+
+# Run specific crate examples or binaries
+cargo run -p pcap --example <example_name>
 ```
 
 ### Code Quality
+
 ```bash
 # Check code for errors without building
 cargo check
@@ -50,6 +55,17 @@ cargo clippy
 
 # Run all tests
 cargo test
+
+# Run individual workspace tests
+cargo test -p pcap
+cargo test -p tcpip
+cargo test -p deadman
+
+# Run specific test functions
+cargo test <test_name>
+
+# Measure code coverage
+cargo llvm-cov
 ```
 
 ### Dependencies
@@ -64,3 +80,20 @@ The project requires libpcap development libraries for packet capture functional
 ## Protocol Implementation Pattern
 
 Network protocols are implemented using the `TryFromBytes` trait in the `tcpip` crate, which provides a consistent interface for parsing byte streams into structured packet types.
+
+### Implementation Requirements
+- All protocol structs must implement bidirectional conversion: `TryFrom<&[u8]>` and `Into<Vec<u8>>`
+- Error handling uses `thiserror` for structured error definitions
+- Modular design with submodules for each protocol component (header, address, etc.)
+- Comprehensive validation during parsing with detailed error messages
+
+### Current Protocol Support
+- **Ethernet**: Frame parsing with EtherType identification
+- **IPv4**: Header parsing with protocol field extraction
+- **ARP**: Request/Reply packet parsing (in development)
+- **ICMP**: Basic message structure parsing
+
+### Testing Guidelines
+- Implement only the minimum necessary tests to achieve C1 coverage
+- Group test functions by the target function being tested
+- Add descriptive comments for test cases using `[正常系] description` or `[異常系] description` format
