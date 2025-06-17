@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(cargo --list)",
+      "Bash(cargo check --help)",
+      "Bash(cargo build --help)",
+      "Bash(cargo test --help)",
+      "Bash(cargo fmt --help)",
+      "Bash(cargo clippy --help)",
+      "Bash(cargo test *)",
+      "Bash(cargo llvm-cov *)",
+      "Bash(rustc --version)",
+      "Bash(rustup --version)",
+      "Bash(rustup show)",
+      "Bash(rustup toolchain list)",
+      "Bash(rustup component list)"
+    ]
+  }
+}
