@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum VLANTagPIDError {
     #[error("{0:X} is Invalid VLAN Tag PID")]
     InvalidVlanTagPID(u16),
@@ -9,7 +9,7 @@ pub enum VLANTagPIDError {
 }
 
 /// VLAN Tag Protocol Identifier
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VLANTagPID {
     /// VLAN
     VLAN = 0x8100,
@@ -68,9 +68,20 @@ impl From<VLANTagPID> for u16 {
         val as u16
     }
 }
+impl From<&VLANTagPID> for u16 {
+    fn from(val: &VLANTagPID) -> Self {
+        *val as u16
+    }
+}
 impl From<VLANTagPID> for [u8; 2] {
     fn from(value: VLANTagPID) -> Self {
         let value = value as u16;
+        value.to_be_bytes()
+    }
+}
+impl From<&VLANTagPID> for [u8; 2] {
+    fn from(value: &VLANTagPID) -> Self {
+        let value = *value as u16;
         value.to_be_bytes()
     }
 }
@@ -80,10 +91,16 @@ impl From<VLANTagPID> for Vec<u8> {
         bytes.to_vec()
     }
 }
+impl From<&VLANTagPID> for Vec<u8> {
+    fn from(value: &VLANTagPID) -> Self {
+        let bytes: [u8; 2] = value.into();
+        bytes.to_vec()
+    }
+}
 
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum VLANTagError {
-    #[error("Invalid VLAN Tag PID: {0}")]
+    #[error(transparent)]
     InvalidVlanTagPID(#[from] VLANTagPIDError),
     #[error("Invalid VLAN Tag")]
     InvalidVlanTag,
@@ -95,7 +112,7 @@ pub enum VLANTagError {
     InvalidVlanVID(u16),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VLANTag {
     /// Tag Protocol Identifier
     pub tpid: VLANTagPID,
@@ -183,16 +200,31 @@ impl From<VLANTag> for [u8; 4] {
         bytes
     }
 }
+impl From<&VLANTag> for [u8; 4] {
+    fn from(value: &VLANTag) -> Self {
+        let mut bytes = [0; 4];
+        bytes[0..2].copy_from_slice(&Into::<[u8; 2]>::into(value.tpid));
+        bytes[2] = (value.pcp << 5) | (value.dei as u8) << 4 | (value.vid >> 8) as u8;
+        bytes[3] = value.vid as u8;
+        bytes
+    }
+}
 impl From<VLANTag> for Vec<u8> {
     fn from(value: VLANTag) -> Self {
         let bytes: [u8; 4] = value.into();
         bytes.to_vec()
     }
 }
+impl From<&VLANTag> for Vec<u8> {
+    fn from(value: &VLANTag) -> Self {
+        let bytes: [u8; 4] = value.into();
+        bytes.to_vec()
+    }
+}
 
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum VLANError {
-    #[error("Invalid VLAN Tag: {0}")]
+    #[error(transparent)]
     InvalidVlanTag(#[from] VLANTagError),
     #[error("Invalid size of VLAN")]
     InvalidVlanSize,
@@ -200,7 +232,7 @@ pub enum VLANError {
     InvalidQinQTag(u16),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VLAN {
     /// VLAN Tag
     Tag(VLANTag),

@@ -8,19 +8,19 @@ pub use self::ether_type::{EtherType, EtherTypeError};
 pub use self::mac_address::{MacAddr, MacAddrError};
 pub use self::vlan::{VLAN, VLANError};
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EthernetFrameError {
     #[error("Invalid frame")]
     InvalidFrame,
-    #[error("Invalid MAC address")]
+    #[error(transparent)]
     InvalidMacAddr(#[from] MacAddrError),
-    #[error("Invalid EtherType")]
+    #[error(transparent)]
     InvalidEtherType(#[from] EtherTypeError),
-    #[error("Invalid VLAN")]
+    #[error(transparent)]
     InvalidVlan(#[from] VLANError),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetFrame {
     pub src: MacAddr,
     pub dst: MacAddr,
@@ -45,11 +45,9 @@ impl EthernetFrame {
             payload: payload.as_ref().to_vec(),
         }
     }
-}
-impl TryFrom<&[u8]> for EthernetFrame {
-    type Error = EthernetFrameError;
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+    pub fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, EthernetFrameError> {
+        let value = value.as_ref();
         let frame_length = value.len();
         // 本来は最小フレームサイズが６４Byteであるが、キャプチャ手段によってはパディングが削られるので最大サイズのみチェックする
         // Jumbo Frameはサポートしない
@@ -88,18 +86,26 @@ impl TryFrom<&[u8]> for EthernetFrame {
         })
     }
 }
+
+impl TryFrom<&[u8]> for EthernetFrame {
+    type Error = EthernetFrameError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(value)
+    }
+}
 impl TryFrom<Vec<u8>> for EthernetFrame {
     type Error = EthernetFrameError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        EthernetFrame::try_from(value.as_slice())
+        Self::try_from_bytes(value)
     }
 }
 impl TryFrom<&Vec<u8>> for EthernetFrame {
     type Error = EthernetFrameError;
 
     fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
-        EthernetFrame::try_from(value.as_slice())
+        Self::try_from_bytes(value)
     }
 }
 impl TryFrom<EthernetFrame> for Vec<u8> {
