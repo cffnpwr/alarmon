@@ -1,5 +1,6 @@
 use anyhow::Result;
-use tcpip::ethernet::EthernetFrame;
+use tcpip::ethernet::{EtherType, EthernetFrame};
+use tcpip::ipv4::IPv4Packet;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,15 +13,31 @@ async fn main() -> Result<()> {
     while let Ok(packet) = receiver.recv() {
         let result = EthernetFrame::try_from(packet.as_slice());
         if let Err(e) = result {
-            eprintln!("Failed to parse Ethernet frame: {}", e);
-            eprintln!("Packet len: {}", packet.len());
+            eprintln!(
+                "Failed to parse Ethernet frame: {}, Frame len: {}",
+                e,
+                packet.len()
+            );
             continue;
         }
         let frame = result.unwrap();
+        if frame.ether_type != EtherType::IPv4 {
+            continue;
+        }
 
+        let result = IPv4Packet::try_from(&frame.payload);
+        if let Err(e) = result {
+            eprintln!(
+                "Failed to parse IPv4 packet: {}, Packet len: {}",
+                e,
+                frame.payload.len()
+            );
+            continue;
+        }
+        let ipv4_packet = result.unwrap();
         println!(
-            "src MAC: {}, dst MAC: {}, EtherType: {}",
-            frame.src, frame.dst, frame.ether_type,
+            "Captured IPv4 packet: {} -> {}, Protocol: {}",
+            ipv4_packet.src, ipv4_packet.dst, ipv4_packet.protocol
         );
     }
 

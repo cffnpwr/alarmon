@@ -27,7 +27,7 @@ pub struct LibpcapDataLinkSender {
     capture: Arc<Mutex<Capture<Active>>>,
 }
 impl DataLinkSender for LibpcapDataLinkSender {
-    fn _send(&mut self, buf: &[u8]) -> Result<(), PcapError> {
+    fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError> {
         todo!()
     }
 }

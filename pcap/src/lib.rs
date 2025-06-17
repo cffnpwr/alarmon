@@ -5,11 +5,11 @@ mod backend;
 pub use backend::PcapError;
 
 pub trait DataLinkSender {
-    fn _send(&mut self, buf: &[u8]) -> Result<(), PcapError>;
+    fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError>;
 }
 pub trait DataLinkSenderExt: DataLinkSender {
     fn send(&mut self, buf: impl AsRef<[u8]>) -> Result<(), PcapError> {
-        self._send(buf.as_ref())
+        self.send_bytes(buf.as_ref())
     }
 }
 impl<T: DataLinkSender> DataLinkSenderExt for T {}
