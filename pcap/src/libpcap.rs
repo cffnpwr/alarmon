@@ -28,7 +28,12 @@ pub struct LibpcapDataLinkSender {
 }
 impl DataLinkSender for LibpcapDataLinkSender {
     fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError> {
-        todo!()
+        self.capture
+            .lock()
+            .expect("failed to lock capture")
+            .sendpacket(buf)
+            .map_err(PcapError::from)?;
+        Ok(())
     }
 }
 
@@ -50,6 +55,7 @@ impl DataLinkReceiver for LibpcapDataLinkReceiver {
 pub fn open(ni: &NetworkInterface, promisc: bool) -> Result<super::Channel, PcapError> {
     let capture = Capture::from_device(ni.name())
         .map_err(PcapError::from)?
+        .immediate_mode(true)
         .promisc(promisc)
         .open()
         .map_err(PcapError::from)?;
