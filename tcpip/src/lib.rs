@@ -4,6 +4,7 @@ pub mod address;
 pub mod arp;
 pub mod ethernet;
 pub mod icmp;
+pub mod ip_cidr;
 pub mod ipv4;
 
 trait TryFromBytes {

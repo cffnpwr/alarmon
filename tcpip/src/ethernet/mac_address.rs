@@ -18,7 +18,7 @@ pub enum MacAddrError {
     SliceToArrayError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, AutoTryFrom)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, AutoTryFrom)]
 #[auto_try_from(method = try_from_bytes, error = MacAddrError, types = [&[u8], Vec<u8>, Box<[u8]>])]
 pub struct MacAddr([u8; 6]);
 impl SizedAddress for MacAddr {
