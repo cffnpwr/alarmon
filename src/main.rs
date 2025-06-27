@@ -1,45 +1,46 @@
+mod arp_resolver;
+mod net_utils;
+
+use std::env;
+use std::net::{IpAddr, Ipv4Addr};
+use std::str::FromStr;
+
 use anyhow::Result;
-use tcpip::ethernet::{EtherType, EthernetFrame};
-use tcpip::ipv4::IPv4Packet;
+use arp_resolver::ArpResolver;
+
+use crate::net_utils::netlink::{LinkType, Netlink};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let ni = pcap::NetworkInterface::find_by_name("en0").expect("Network interface not found");
-    let cap = pcap::open(&ni, true).expect("Failed to open network interface");
-    let (_, mut receiver) = match cap {
-        pcap::Channel::Ethernet(s, r) => (s, r),
-    };
-
-    while let Ok(packet) = receiver.recv() {
-        let result = EthernetFrame::try_from(packet.as_slice());
-        if let Err(e) = result {
-            eprintln!(
-                "Failed to parse Ethernet frame: {}, Frame len: {}",
-                e,
-                packet.len()
-            );
-            continue;
-        }
-        let frame = result.unwrap();
-        if frame.ether_type != EtherType::IPv4 {
-            continue;
-        }
-
-        let result = IPv4Packet::try_from(&frame.payload);
-        if let Err(e) = result {
-            eprintln!(
-                "Failed to parse IPv4 packet: {}, Packet len: {}",
-                e,
-                frame.payload.len()
-            );
-            continue;
-        }
-        let ipv4_packet = result.unwrap();
-        println!(
-            "Captured IPv4 packet: {} -> {}, Protocol: {}",
-            ipv4_packet.src, ipv4_packet.dst, ipv4_packet.protocol
-        );
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("使用方法: {} <IPアドレス>", args[0]);
+        eprintln!("例: {} 192.168.1.2", args[0]);
+        std::process::exit(1);
     }
+
+    let target_ip = Ipv4Addr::from_str(&args[1])
+        .map_err(|_| anyhow::anyhow!("無効なIPアドレス: {}", args[1]))?;
+    let netlink = Netlink::new()?;
+    let route = netlink.get_route(target_ip)?;
+    println!("成功: {} のルート情報は {:#?}", target_ip, route);
+
+    if route.link_type == LinkType::RawIP {
+        println!("{} はRawIPリンクタイプです。ARPは不要です。", target_ip);
+        return Ok(());
+    }
+
+    println!(
+        "{} はEthernetリンクタイプです。ARPを実行します。",
+        route.via.expect("ルート情報にviaがありません")
+    );
+    let IpAddr::V4(target_ip) = route.via.expect("ルート情報にviaがありません") else {
+        return Err(anyhow::anyhow!(
+            "ルート情報のIPアドレスがIPv4ではありません"
+        ));
+    };
+    let mac_addr = ArpResolver::resolve(target_ip).await?;
+    println!("成功: {} のMACアドレスは {} です", target_ip, mac_addr);
 
     Ok(())
 }
