@@ -6,7 +6,7 @@ use libpcap::{Active, Capture, Device};
 use nix::net::if_::if_nametoindex;
 use thiserror::Error;
 
-use super::{DataLinkReceiver, DataLinkSender, NetworkInterface};
+use super::{DataLinkReceiver, DataLinkSender};
 
 #[derive(Debug, PartialEq, Eq, Error)]
 pub struct PcapError {
@@ -77,7 +77,7 @@ impl DataLinkReceiver for LibpcapDataLinkReceiver {
 }
 
 pub fn open(ni: &NetworkInterface, promisc: bool) -> Result<super::Channel, PcapError> {
-    let capture = Capture::from_device(ni.name())
+    let capture = Capture::from_device(ni.name().as_str())
         .map_err(PcapError::from)?
         .immediate_mode(true)
         .promisc(promisc)
@@ -95,9 +95,25 @@ pub fn open(ni: &NetworkInterface, promisc: bool) -> Result<super::Channel, Pcap
     ))
 }
 
-pub(super) struct NetworkInterfaceInner;
-impl NetworkInterfaceInner {
-    pub(super) fn list() -> Result<Vec<NetworkInterface>, PcapError> {
+pub struct NetworkInterface {
+    name: String,
+    description: String,
+    index: u32,
+}
+impl NetworkInterface {
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    pub fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    pub fn list() -> Result<Vec<NetworkInterface>, PcapError> {
         let devices = Device::list().map_err(PcapError::from)?;
         let interfaces = devices
             .iter()
@@ -116,7 +132,7 @@ impl NetworkInterfaceInner {
         Ok(interfaces)
     }
 
-    pub(super) fn find_by_name<S: AsRef<str>>(name: S) -> Option<super::NetworkInterface> {
+    pub fn find_by_name<S: AsRef<str>>(name: S) -> Option<NetworkInterface> {
         Self::list()
             .ok()?
             .into_iter()
