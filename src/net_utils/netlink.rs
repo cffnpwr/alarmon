@@ -1,10 +1,11 @@
+use std::net::{IpAddr, Ipv4Addr};
+
+pub(crate) use macos::{Netlink, NetlinkError};
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
-use thiserror::Error;
 
 #[cfg(target_os = "macos")]
-#[path = "./netlink/macos.rs"]
-mod backend;
+mod macos;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NetworkInterface {
@@ -13,24 +14,61 @@ pub(crate) struct NetworkInterface {
     pub(crate) mac_addr: MacAddr,
     pub(crate) ip_addrs: Vec<IPCIDR>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub(crate) enum NetlinkError {
-    #[error(transparent)]
-    FailedToGetIfAddrs(#[from] nix::Error),
+impl Default for NetworkInterface {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            name: String::new(),
+            mac_addr: MacAddr::default(),
+            ip_addrs: Vec::new(),
+        }
+    }
 }
 
-pub(crate) struct Netlink {
-    inner: backend::Netlink,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LinkType {
+    Ethernet,
+    RawIP,
 }
-impl Netlink {
-    pub(crate) fn new() -> Self {
-        Netlink {
-            inner: backend::Netlink::new(),
+impl Default for LinkType {
+    fn default() -> Self {
+        Self::Ethernet
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RouteEntry {
+    pub(crate) interface: NetworkInterface,
+    pub(crate) to: IpAddr,
+    pub(crate) via: Option<IpAddr>,
+    pub(crate) link_type: LinkType,
+}
+impl RouteEntry {
+    pub(crate) fn new(
+        interface: &NetworkInterface,
+        to: &IpAddr,
+        via: Option<&IpAddr>,
+        link_type: &LinkType,
+    ) -> Self {
+        Self {
+            interface: interface.clone(),
+            to: to.clone(),
+            via: via.cloned(),
+            link_type: link_type.clone(),
         }
     }
 
-    pub(crate) fn get_interfaces(&self) -> Result<Vec<NetworkInterface>, NetlinkError> {
-        self.inner.get_interfaces()
+    pub(crate) fn is_gateway(&self) -> bool {
+        self.via.is_some()
+    }
+}
+impl Default for RouteEntry {
+    fn default() -> Self {
+        Self {
+            interface: NetworkInterface::default(),
+            to: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            via: None,
+            link_type: LinkType::default(),
+        }
     }
 }
