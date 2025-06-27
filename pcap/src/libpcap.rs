@@ -4,12 +4,36 @@ use std::sync::{Arc, Mutex};
 use libpcap;
 use libpcap::{Active, Capture, Device};
 use nix::net::if_::if_nametoindex;
+use thiserror::Error;
 
 use super::{DataLinkReceiver, DataLinkSender, NetworkInterface};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub struct PcapError {
     inner: libpcap::Error,
+}
+impl Clone for PcapError {
+    fn clone(&self) -> Self {
+        Self {
+            inner: match &self.inner {
+                libpcap::Error::MalformedError(utf8_error) => {
+                    libpcap::Error::MalformedError(utf8_error.clone())
+                }
+                libpcap::Error::InvalidString => libpcap::Error::InvalidString,
+                libpcap::Error::PcapError(err) => libpcap::Error::PcapError(err.clone()),
+                libpcap::Error::InvalidLinktype => libpcap::Error::InvalidLinktype,
+                libpcap::Error::TimeoutExpired => libpcap::Error::TimeoutExpired,
+                libpcap::Error::NoMorePackets => libpcap::Error::NoMorePackets,
+                libpcap::Error::NonNonBlock => libpcap::Error::NonNonBlock,
+                libpcap::Error::InsufficientMemory => libpcap::Error::InsufficientMemory,
+                libpcap::Error::InvalidInputString => libpcap::Error::InvalidInputString,
+                libpcap::Error::IoError(error_kind) => libpcap::Error::IoError(error_kind.clone()),
+                libpcap::Error::InvalidRawFd => libpcap::Error::InvalidRawFd,
+                libpcap::Error::ErrnoError(errno) => libpcap::Error::ErrnoError(errno.clone()),
+                libpcap::Error::BufferOverflow => libpcap::Error::BufferOverflow,
+            },
+        }
+    }
 }
 impl From<libpcap::Error> for PcapError {
     fn from(value: libpcap::Error) -> Self {
