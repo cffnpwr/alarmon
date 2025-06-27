@@ -30,8 +30,8 @@ pub enum ProtocolAddressError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ARPError {
-    #[error("Invalid ARP packet length. Expected at least 8 bytes, but got {0} bytes.")]
-    InvalidPacketLength(usize),
+    #[error("Invalid ARP packet length. Expected at least {0} bytes, but got {1} bytes.")]
+    InvalidPacketLength(usize, usize),
     #[error("Invalid Hardware and Protocol combination: {0} and {1}")]
     InvalidHardwareAndProtocolCombination(HardwareType, ProtocolType),
     #[error(transparent)]
@@ -56,7 +56,7 @@ impl ARPPacket {
     fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, ARPError> {
         let value = value.as_ref();
         if value.len() < 8 {
-            return Err(ARPError::InvalidPacketLength(value.len()));
+            return Err(ARPError::InvalidPacketLength(8, value.len()));
         }
 
         let htype = HardwareType::try_from(&value[0..2])?;
@@ -139,8 +139,8 @@ where
     fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, ARPError> {
         let value = value.as_ref();
         let expected_len = 8 + (Self::HLEN + Self::PLEN) as usize * 2;
-        if value.len() != expected_len {
-            return Err(ARPError::InvalidPacketLength(value.len()));
+        if value.len() < expected_len {
+            return Err(ARPError::InvalidPacketLength(expected_len, value.len()));
         }
 
         let htype = HardwareType::try_from(&value[0..2])?;
@@ -174,6 +174,43 @@ impl TryFrom<&[u8]> for ARPPacketInner<MacAddr, Ipv4Addr> {
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         ARPPacketInner::<MacAddr, Ipv4Addr>::try_from_bytes(value)
+    }
+}
+impl From<ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
+    fn from(value: ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
+        (&value).into()
+    }
+}
+impl From<&ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
+    fn from(value: &ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
+        let mut bytes = Vec::with_capacity(28);
+
+        // Hardware Type (Ethernet = 1)
+        bytes.extend_from_slice(&(ARPPacketInner::<MacAddr, Ipv4Addr>::HTYPE as u16).to_be_bytes());
+        // Protocol Type (IPv4 = 0x0800)
+        bytes.extend_from_slice(&(ARPPacketInner::<MacAddr, Ipv4Addr>::PTYPE as u16).to_be_bytes());
+        // Hardware Address Length (6 bytes for MAC)
+        bytes.push(ARPPacketInner::<MacAddr, Ipv4Addr>::HLEN);
+        // Protocol Address Length (4 bytes for IPv4)
+        bytes.push(ARPPacketInner::<MacAddr, Ipv4Addr>::PLEN);
+        // Operation
+        bytes.extend_from_slice(&(value.operation as u16).to_be_bytes());
+
+        // Sender Hardware Address (MAC)
+        let sha_bytes: [u8; 6] = value.sha.into();
+        bytes.extend_from_slice(&sha_bytes);
+
+        // Sender Protocol Address (IPv4)
+        bytes.extend_from_slice(&value.spa.octets());
+
+        // Target Hardware Address (MAC)
+        let tha_bytes: [u8; 6] = value.tha.into();
+        bytes.extend_from_slice(&tha_bytes);
+
+        // Target Protocol Address (IPv4)
+        bytes.extend_from_slice(&value.tpa.octets());
+
+        bytes
     }
 }
 
@@ -235,7 +272,7 @@ mod tests {
         let short_packet = [0u8; 27];
         assert!(matches!(
             ARPPacketInner::<MacAddr, Ipv4Addr>::try_from_bytes(&short_packet).unwrap_err(),
-            ARPError::InvalidPacketLength(27)
+            ARPError::InvalidPacketLength(_, _)
         ));
     }
 
@@ -271,7 +308,7 @@ mod tests {
         let short_packet = [0u8; 7];
         assert!(matches!(
             ARPPacket::try_from_bytes(&short_packet).unwrap_err(),
-            ARPError::InvalidPacketLength(7)
+            ARPError::InvalidPacketLength(_, _)
         ));
     }
 

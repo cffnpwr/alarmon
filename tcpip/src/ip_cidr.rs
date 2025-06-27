@@ -7,6 +7,11 @@ use thiserror::Error;
 pub enum IPCIDR {
     V4(IPv4CIDR),
 }
+impl Default for IPCIDR {
+    fn default() -> Self {
+        IPCIDR::V4(IPv4CIDR::default())
+    }
+}
 impl Display for IPCIDR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -49,6 +54,11 @@ impl IPv4Netmask {
         } else {
             Ok(IPv4Netmask(prefix_length))
         }
+    }
+}
+impl Default for IPv4Netmask {
+    fn default() -> Self {
+        Self(0)
     }
 }
 impl Display for IPv4Netmask {
@@ -123,6 +133,14 @@ impl IPv4CIDR {
             address: address.into(),
             netmask,
         })
+    }
+}
+impl Default for IPv4CIDR {
+    fn default() -> Self {
+        IPv4CIDR {
+            address: Ipv4Addr::UNSPECIFIED,
+            netmask: IPv4Netmask::default(),
+        }
     }
 }
 impl Display for IPv4CIDR {
