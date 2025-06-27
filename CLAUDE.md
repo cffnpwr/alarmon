@@ -23,7 +23,8 @@ The project uses Cargo workspace configuration with shared dependencies (anyhow,
 ### Current Implementation
 The main application implements an ARP resolver that:
 - Accepts an IPv4 address as command line argument
-- Sends ARP request packets via specified network interface
+- Uses Netlink-based network interface information retrieval to find appropriate interface
+- Sends ARP request packets via the determined network interface
 - Listens for ARP reply packets with timeout mechanism
 - Resolves target IP addresses to MAC addresses using Ethernet/IPv4 ARP protocol
 
@@ -75,8 +76,12 @@ cargo test <test_name>
 cargo llvm-cov
 ```
 
-### Dependencies
-The project requires libpcap development libraries for packet capture functionality. Installation varies by platform as documented in README.md.
+### Platform-Specific Dependencies
+- **libpcap development libraries**: Required for packet capture functionality
+- **Administrator privileges**: Required for network interface access
+- **Platform-specific**: 
+  - Linux: `rtnetlink` for Netlink communication
+  - macOS: `nix`, `socket2`, `libc` for socket operations
 
 ## Code Style
 
