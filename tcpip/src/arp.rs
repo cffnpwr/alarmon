@@ -28,6 +28,9 @@ pub enum ProtocolAddressError {
     InvalidIpv4Address(#[from] IPv4AddressError),
 }
 
+/// ARPパケット処理に関するエラー
+///
+/// ARPパケットのパース・検証で発生する可能性のあるエラーを定義します。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ARPError {
     #[error("Invalid ARP packet length. Expected at least {0} bytes, but got {1} bytes.")]
@@ -46,7 +49,14 @@ pub enum ARPError {
     InvalidProtocolAddress(#[from] ProtocolAddressError),
 }
 
-// 現状はEthernetとIPv4の組み合わせのみ
+/// ARPパケット
+///
+/// Address Resolution Protocol (ARP)パケットを表現します。
+/// 現在はEthernetとIPv4の組み合わせのみをサポートしています。
+///
+/// 参照:
+/// - [RFC 826 - Ethernet Address Resolution Protocol](https://tools.ietf.org/rfc/rfc826.txt)
+/// - [IANA ARP Parameters](https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
 #[auto_try_from(method = try_from_bytes, error = ARPError, types = [&[u8], Vec<u8>, Box<[u8]>])]
 pub enum ARPPacket {
@@ -73,6 +83,9 @@ impl ARPPacket {
     }
 }
 
+/// ARPパケットの内部構造
+///
+/// ハードウェアアドレス型とプロトコルアドレス型をジェネリックで扱います。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ARPPacketInner<H, P> {
     /// Operation

@@ -21,6 +21,9 @@ use crate::TryFromBytes;
 pub use crate::icmp::message::Message;
 use crate::ipv4::IPv4Packet;
 
+/// ICMPメッセージ処理に関するエラー
+///
+/// ICMPメッセージのパース・検証で発生する可能性のあるエラーを定義します。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ICMPError {
     #[error("Invalid ICMP packet length. Expected at least {0} bytes, but got {1} bytes.")]
@@ -45,7 +48,12 @@ pub enum ICMPError {
 
 /// ICMPメッセージ
 ///
-/// 各メッセージタイプ固有の構造体を統合するenum
+/// Internet Control Message Protocol (ICMP)メッセージを表現します。
+/// 各メッセージタイプ固有の構造体を統合するenumです。
+///
+/// 参照:
+/// - [RFC 792 - Internet Control Message Protocol](https://tools.ietf.org/rfc/rfc792.txt)
+/// - [IANA ICMP Type Numbers](https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
 #[auto_try_from(method = try_from_bytes, error = ICMPError, types = [&[u8], Vec<u8>, Box<[u8]>])]
 pub enum ICMPMessage {

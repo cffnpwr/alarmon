@@ -8,6 +8,9 @@ pub use self::ether_type::{EtherType, EtherTypeError};
 pub use self::mac_address::{MacAddr, MacAddrError};
 pub use self::vlan::{VLAN, VLANError};
 
+/// Ethernetフレーム処理に関するエラー
+///
+/// Ethernetフレームのパース・検証で発生する可能性のあるエラーを定義します。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EthernetFrameError {
     #[error("Invalid frame")]
@@ -20,6 +23,15 @@ pub enum EthernetFrameError {
     InvalidVlan(#[from] VLANError),
 }
 
+/// Ethernetフレーム
+///
+/// IEEE 802.3標準に基づくEthernetフレーム構造を表現します。
+/// VLANタグやQinQにも対応します。
+///
+/// 参照:
+/// - [IEEE 802.3-2018 - Ethernet](https://standards.ieee.org/standard/802_3-2018.html)
+/// - [IANA EtherType Numbers](https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml)
+/// - [IEEE 802.1Q VLAN Tagging](https://standards.ieee.org/standard/802_1Q-2018.html)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetFrame {
     pub src: MacAddr,

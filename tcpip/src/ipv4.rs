@@ -17,6 +17,9 @@ use crate::checksum::calculate_internet_checksum;
 const FLAG_MASK: u8 = 0b1110_0000;
 const FRAGMENT_OFFSET_MASK: u16 = 0b0001_1111_1111_1111;
 
+/// IPv4パケット処理に関するエラー
+///
+/// IPv4パケットのパース・検証で発生する可能性のあるエラーを定義します。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IPv4Error {
     #[error("Invalid IPv4 packet length: mut be at least 20 bytes, but got {0} bytes")]
@@ -32,6 +35,13 @@ pub enum IPv4Error {
     InvalidProtocol(#[from] ProtocolError),
 }
 
+/// IPv4パケット
+///
+/// IPv4プロトコルに基づくパケット構造を表現します。
+///
+/// 参照:
+/// - [RFC 791 - Internet Protocol](https://tools.ietf.org/rfc/rfc791.txt)
+/// - [IANA Protocol Numbers](https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
 #[auto_try_from(method = try_from_bytes, error = IPv4Error, types = [&[u8], Vec<u8>, Box<[u8]>])]
 pub struct IPv4Packet {
