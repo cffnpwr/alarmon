@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "rfc": {
+      "type": "stdio",
+      "command": "mise",
+      "args": [
+        "x",
+        "--",
+        "mcp-rfc"
+      ],
+      "env": {}
+    }
+  }
+}
