@@ -36,3 +36,26 @@ impl TryFromBytes for Ipv4Addr {
         Ok(Ipv4Addr::from(octets))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TryFromBytes;
+
+    // try_from_bytesのテスト
+    #[test]
+    fn test_try_from_bytes_valid() {
+        // [正常系] 4バイトからのIPv4アドレス作成
+        let bytes = [192, 168, 1, 1];
+        let addr = Ipv4Addr::try_from_bytes(&bytes).unwrap();
+        assert_eq!(addr, Ipv4Addr::new(192, 168, 1, 1));
+    }
+
+    #[test]
+    fn test_try_from_bytes_invalid_length() {
+        // [異常系] 不正な長さのバイト配列
+        let bytes = [192, 168, 1];
+        let result = Ipv4Addr::try_from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+}

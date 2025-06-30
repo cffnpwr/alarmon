@@ -5,6 +5,7 @@ mod type_of_service;
 
 use std::net::Ipv4Addr;
 
+use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
 pub use self::flags::Flags;
@@ -30,6 +31,8 @@ pub enum IPv4Error {
     InvalidProtocol(#[from] ProtocolError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
+#[auto_try_from(method = try_from_bytes, error = IPv4Error, types = [&[u8], Vec<u8>, Box<[u8]>])]
 pub struct IPv4Packet {
     /// IP Headerの長さ
     /// ４Byte単位で表される
@@ -133,7 +136,11 @@ impl IPv4Packet {
     fn calculate_checksum(&self) -> u16 {
         let mut sum = 0u16;
         for chunks in Vec::<u8>::from(self).chunks(2) {
-            let chunk = u16::from_be_bytes([chunks[0], chunks[1]]);
+            let chunk = if chunks.len() == 2 {
+                u16::from_be_bytes([chunks[0], chunks[1]])
+            } else {
+                u16::from_be_bytes([chunks[0], 0])
+            };
             let (result, is_overflow) = sum.overflowing_add(chunk);
             sum = if is_overflow { result + 1 } else { result };
         }
@@ -141,8 +148,14 @@ impl IPv4Packet {
     }
 
     pub fn validate_checksum(&self) -> bool {
-        let sum = self.calculate_checksum();
-        sum == 0
+        self.calculate_checksum() == 0
+    }
+
+    /// IPv4パケットの実際の長さを計算
+    /// ヘッダー長 + オプション長 + ペイロード長
+    pub fn len(&self) -> usize {
+        let header_len = (self.internet_header_length as usize) * 4;
+        header_len + self.payload.len()
     }
 
     pub fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, IPv4Error> {
@@ -213,55 +226,6 @@ impl IPv4Packet {
         vec.extend(self.options.iter().cloned());
         vec.extend(self.payload.iter().cloned());
         vec
-    }
-}
-impl<const N: usize> TryFrom<[u8; N]> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: [u8; N]) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl<const N: usize> TryFrom<&[u8; N]> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: &[u8; N]) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<&[u8]> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<Box<[u8]>> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: Box<[u8]>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<&Box<[u8]>> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: &Box<[u8]>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<Vec<u8>> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<&Vec<u8>> for IPv4Packet {
-    type Error = IPv4Error;
-
-    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
     }
 }
 impl From<IPv4Packet> for Vec<u8> {

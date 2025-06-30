@@ -148,3 +148,73 @@ impl Display for IPv4CIDR {
         write!(f, "{}/{}", self.address, self.netmask.prefix_length())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    // IPv4Netmask::prefix_lengthのテスト
+    #[test]
+    fn test_ipv4_netmask_prefix_length() {
+        // [正常系] プレフィックス長の取得
+        let netmask = IPv4Netmask(24);
+        assert_eq!(netmask.prefix_length(), 24);
+    }
+
+    // IPv4Netmask::into_addressのテスト
+    #[test]
+    fn test_ipv4_netmask_into_address() {
+        // [正常系] IPv4Addrへの変換
+        let netmask = IPv4Netmask(24);
+        let addr = netmask.into_address();
+        assert_eq!(addr, Ipv4Addr::new(255, 255, 255, 0));
+
+        let netmask = IPv4Netmask(16);
+        let addr = netmask.into_address();
+        assert_eq!(addr, Ipv4Addr::new(255, 255, 0, 0));
+    }
+
+    // IPv4Netmask::try_from_prefix_lengthのテスト
+    #[test]
+    fn test_ipv4_netmask_try_from_prefix_length_invalid() {
+        // [異常系] 不正なプレフィックス長
+        let result = IPv4Netmask::try_from(33u8);
+        assert!(result.is_err());
+    }
+
+    // IPv4Netmask::try_from_ipv4_addrのテスト
+    #[test]
+    fn test_ipv4_netmask_try_from_ipv4_addr() {
+        // [正常系] IPv4Addrからの変換
+        let addr = Ipv4Addr::new(255, 255, 255, 0);
+        let netmask = IPv4Netmask::try_from(addr).unwrap();
+        assert_eq!(netmask.prefix_length(), 24);
+    }
+
+    // IPv4CIDR::new_with_prefix_lengthのテスト
+    #[test]
+    fn test_ipv4_cidr_new_with_prefix_length() {
+        // [正常系] 正常なプレフィックス長
+        let addr = Ipv4Addr::new(192, 168, 1, 0);
+        let cidr = IPv4CIDR::new_with_prefix_length(addr, &24).unwrap();
+        assert_eq!(cidr.address, addr);
+        assert_eq!(cidr.netmask.prefix_length(), 24);
+    }
+
+    #[test]
+    fn test_ipv4_cidr_new_with_prefix_length_invalid() {
+        // [異常系] 不正なプレフィックス長
+        let addr = Ipv4Addr::new(10, 0, 0, 0);
+        let result = IPv4CIDR::new_with_prefix_length(addr, &33);
+        assert!(result.is_err());
+    }
+
+    // IPv4CIDR::fmtのテスト
+    #[test]
+    fn test_ipv4_cidr_display() {
+        // [正常系] 表示形式
+        let cidr = IPv4CIDR::new(Ipv4Addr::new(192, 168, 1, 0), IPv4Netmask(24));
+        assert_eq!(format!("{}", cidr), "192.168.1.0/24");
+    }
+}
