@@ -1,5 +1,5 @@
 [package]
-name = "deadman"
+name = "alarmon"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,7 +15,7 @@ members = ["pcap", "tcpip"]
 version = "0.1.0"
 edition = "2024"
 authors = ["cffnpwr <cffnpwr@gmail.com>"]
-repository = "https://github.com/cffnpwr/deadman-rs.git"
+repository = "https://github.com/cffnpwr/alarmon.git"
 license-file = "LICENSE"
 rust-version = "1.85.0"
 

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-deadman-rs is a Rust implementation of the [deadman](https://github.com/upa/deadman) network monitoring tool. The project is structured as a Cargo workspace with three main components:
+alarmon is a Rust implementation network monitoring tool based on the [deadman](https://github.com/upa/deadman) concept. The project is structured as a Cargo workspace with three main components:
 
-- **Main binary (`deadman`)**: The primary application that captures and processes network packets
+- **Main binary (`alarmon`)**: The primary application that captures and processes network packets
 - **`pcap` crate**: Cross-platform packet capture library with libpcap backend support
 - **`tcpip` crate**: TCP/IP packet parsing library for Ethernet, IPv4, ARP, and ICMP protocols
 
@@ -67,7 +67,7 @@ cargo test
 # Run individual workspace tests
 cargo test -p pcap
 cargo test -p tcpip
-cargo test -p deadman
+cargo test -p alarmon
 
 # Run specific test functions
 cargo test <test_name>
