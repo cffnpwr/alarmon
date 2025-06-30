@@ -1,4 +1,4 @@
-# deadman-rs
+# Alive and Route Monitor (alarmon)
 
 ## これはなに
 
@@ -21,8 +21,8 @@ TBD
 1. Clone the repository
 
     ```sh
-    git clone https://github.com/cffnpwr/deadman-rs.git
-    cd deadman-rs
+    git clone https://github.com/cffnpwr/alarmon.git
+    cd alarmon
     ```
 
 1. Install dependency libraries (optional)
@@ -52,7 +52,7 @@ TBD
        2. Download the [Npcap SDK](https://npcap.com/#download).
        3. Add the SDK's `/Lib` or `/Lib/x64` folder to your LIB environment variable.
 
-2. Build the project
+1. Build the project
 
     ```sh
     cargo build --release
@@ -60,7 +60,7 @@ TBD
 
 ## Roadmap
 
-- [ ] ICMPの送受信
+- [x] ICMPの送受信
   - [ ] 経路情報の取得(traceroute機能)
 - [ ] ファイルからの監視対象の読み込み
 - [ ] 非同期処理
