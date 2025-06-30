@@ -29,12 +29,11 @@ tokio = { version = "1.45.1", features = ["macros", "rt", "rt-multi-thread", "si
 pcap = { path = "./pcap", features = ["libpcap"] }
 tcpip = { path = "./tcpip" }
 thiserror.workspace = true
-nix = { version = "0.30.1", features = ["uio"] }
+nix = { version = "0.30.1", features = ["net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.17.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nix = { version = "0.30.1", features = ["socket"] }
 socket2 = "0.5.8"
 libc = "0.2"

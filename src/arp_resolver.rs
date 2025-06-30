@@ -6,7 +6,7 @@ use tcpip::arp::{ARPPacket, ARPPacketInner, Operation};
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError, MacAddr, MacAddrError};
 use tcpip::ip_cidr::IPCIDR;
 use thiserror::Error;
-use tokio::time::Instant;
+use tokio::time::timeout;
 
 use crate::net_utils::netlink::{Netlink, NetlinkError};
 
@@ -89,6 +89,7 @@ impl ArpResolver {
             Vec::<u8>::try_from(ethernet_frame).map_err(ArpResolverError::FrameConversionError)?;
         sender
             .send_bytes(&frame_bytes)
+            .await
             .map_err(ArpResolverError::PcapError)?;
 
         println!(
@@ -98,35 +99,37 @@ impl ArpResolver {
 
         // ARPレスポンスを待機
         let timeout_duration = Duration::from_secs(5);
-        let start_time = Instant::now();
+        let result = timeout(timeout_duration, async {
+            loop {
+                let packet = match receiver.recv().await {
+                    Ok(packet) => packet,
+                    _ => continue,
+                };
 
-        while start_time.elapsed() < timeout_duration {
-            let packet = match receiver.recv() {
-                Ok(packet) => packet,
-                _ => continue,
-            };
+                let frame = match EthernetFrame::try_from(packet.as_slice()) {
+                    Ok(frame) => frame,
+                    Err(_) => continue,
+                };
+                if frame.ether_type != EtherType::ARP {
+                    continue;
+                }
 
-            let frame = match EthernetFrame::try_from(packet.as_slice()) {
-                Ok(frame) => frame,
-                Err(_) => continue,
-            };
-
-            if frame.ether_type != EtherType::ARP {
-                continue;
+                let arp = match ARPPacket::try_from(&frame.payload) {
+                    Ok(ARPPacket::EthernetIPv4(arp)) => arp,
+                    _ => continue,
+                };
+                if arp.operation == Operation::Reply && arp.spa == arp_target {
+                    println!("ARPレスポンスを受信: {} -> {}", arp.spa, arp.sha);
+                    return arp.sha;
+                }
             }
+        })
+        .await;
 
-            let arp = match ARPPacket::try_from(&frame.payload) {
-                Ok(ARPPacket::EthernetIPv4(arp)) => arp,
-                _ => continue,
-            };
-
-            if arp.operation == Operation::Reply && arp.spa == arp_target {
-                println!("ARPレスポンスを受信: {} -> {}", arp.spa, arp.sha);
-                return Ok(arp.sha);
-            }
+        match result {
+            Ok(mac_addr) => Ok(mac_addr),
+            Err(_) => Err(ArpResolverError::Timeout),
         }
-
-        Err(ArpResolverError::Timeout)
     }
 
     fn get_source_ip(

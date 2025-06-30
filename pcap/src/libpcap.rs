@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use libpcap;
 use libpcap::{Active, Capture, Device};
 use nix::net::if_::if_nametoindex;
@@ -50,14 +51,20 @@ impl Display for PcapError {
 pub struct LibpcapDataLinkSender {
     capture: Arc<Mutex<Capture<Active>>>,
 }
+#[async_trait]
 impl DataLinkSender for LibpcapDataLinkSender {
-    fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError> {
-        self.capture
-            .lock()
-            .expect("failed to lock capture")
-            .sendpacket(buf)
-            .map_err(PcapError::from)?;
-        Ok(())
+    async fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError> {
+        let capture = self.capture.clone();
+        let buf = buf.to_vec();
+        tokio::task::spawn_blocking(move || {
+            capture
+                .lock()
+                .expect("failed to lock capture")
+                .sendpacket(buf)
+                .map_err(PcapError::from)
+        })
+        .await
+        .expect("spawn_blocking failed")
     }
 }
 
@@ -65,14 +72,20 @@ impl DataLinkSender for LibpcapDataLinkSender {
 pub struct LibpcapDataLinkReceiver {
     capture: Arc<Mutex<Capture<Active>>>,
 }
+#[async_trait]
 impl DataLinkReceiver for LibpcapDataLinkReceiver {
-    fn recv(&mut self) -> Result<Vec<u8>, PcapError> {
-        self.capture
-            .lock()
-            .expect("failed to lock capture")
-            .next_packet()
-            .map_err(PcapError::from)
-            .map(|packet| packet.data.to_vec())
+    async fn recv(&mut self) -> Result<Vec<u8>, PcapError> {
+        let capture = self.capture.clone();
+        tokio::task::spawn_blocking(move || {
+            capture
+                .lock()
+                .expect("failed to lock capture")
+                .next_packet()
+                .map_err(PcapError::from)
+                .map(|packet| packet.data.to_vec())
+        })
+        .await
+        .expect("spawn_blocking failed")
     }
 }
 
