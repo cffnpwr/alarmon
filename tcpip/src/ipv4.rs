@@ -12,6 +12,7 @@ pub use self::flags::Flags;
 pub use self::protocol::Protocol;
 use self::protocol::ProtocolError;
 pub use self::type_of_service::TypeOfService;
+use crate::checksum::calculate_internet_checksum;
 
 const FLAG_MASK: u8 = 0b1110_0000;
 const FRAGMENT_OFFSET_MASK: u16 = 0b0001_1111_1111_1111;
@@ -134,17 +135,8 @@ impl IPv4Packet {
     }
 
     fn calculate_checksum(&self) -> u16 {
-        let mut sum = 0u16;
-        for chunks in Vec::<u8>::from(self).chunks(2) {
-            let chunk = if chunks.len() == 2 {
-                u16::from_be_bytes([chunks[0], chunks[1]])
-            } else {
-                u16::from_be_bytes([chunks[0], 0])
-            };
-            let (result, is_overflow) = sum.overflowing_add(chunk);
-            sum = if is_overflow { result + 1 } else { result };
-        }
-        !sum
+        let data = Vec::<u8>::from(self);
+        calculate_internet_checksum(&data)
     }
 
     pub fn validate_checksum(&self) -> bool {

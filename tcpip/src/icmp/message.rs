@@ -5,14 +5,15 @@ pub mod redirect;
 pub mod time_exceeded;
 pub mod timestamp;
 
-pub use destination_unreachable::{
+pub use self::destination_unreachable::{
     DestinationUnreachableMessage, DestinationUnreachableMessageError,
 };
-pub use echo::{EchoMessage, EchoMessageError};
-pub use parameter_problem::{ParameterProblemMessage, ParameterProblemMessageError};
-pub use redirect::{RedirectMessage, RedirectMessageError};
-pub use time_exceeded::{TimeExceededMessage, TimeExceededMessageError};
-pub use timestamp::{TimestampMessage, TimestampMessageError};
+pub use self::echo::{EchoMessage, EchoMessageError};
+pub use self::parameter_problem::{ParameterProblemMessage, ParameterProblemMessageError};
+pub use self::redirect::{RedirectMessage, RedirectMessageError};
+pub use self::time_exceeded::{TimeExceededMessage, TimeExceededMessageError};
+pub use self::timestamp::{TimestampMessage, TimestampMessageError};
+use crate::checksum::calculate_internet_checksum;
 
 /// ICMPメッセージの共通インターフェース
 ///
@@ -30,30 +31,7 @@ where
     /// チェックサムを計算
     fn calculate_checksum(&self) -> u16 {
         let data = Vec::<u8>::from(self);
-
-        let mut sum: u32 = 0;
-        let mut i = 0;
-
-        // 16ビット単位で処理
-        while i < data.len().saturating_sub(1) {
-            let word = u16::from_be_bytes([data[i], data[i + 1]]);
-            sum = sum.wrapping_add(word as u32);
-            i += 2;
-        }
-
-        // 奇数バイトが残っている場合は最後のバイトを処理
-        if i < data.len() {
-            let word = u16::from_be_bytes([data[i], 0]);
-            sum = sum.wrapping_add(word as u32);
-        }
-
-        // キャリーを畳み込む
-        while (sum >> 16) != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-
-        // 1の補数を取る
-        !(sum as u16)
+        calculate_internet_checksum(&data)
     }
 
     /// チェックサムを検証
