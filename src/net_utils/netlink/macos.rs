@@ -29,7 +29,7 @@ const fn align(len: usize) -> usize {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct rt_msg {
-    hdr: libc::rt_msghdr,
+    hdr: rt_msghdr,
     attrs: [u8; ATTR_LEN],
 }
 
@@ -227,7 +227,6 @@ impl Netlink {
     ) -> Result<RouteEntry, NetlinkError> {
         let rtm_addrs = rt_msg.hdr.rtm_addrs;
         let mut payload = rt_msg.attrs[..len - RTM_MSGHDR_LEN].as_mut();
-        dbg!(&payload);
 
         let mut route_entry = RouteEntry::default();
         for i in 0..RTAX_MAX {

@@ -1,8 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-pub(crate) use macos::{Netlink, NetlinkError};
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
+
+#[cfg(target_os = "macos")]
+pub(crate) use self::macos::{Netlink, NetlinkError};
 
 #[cfg(target_os = "macos")]
 mod macos;
