@@ -113,7 +113,8 @@ The project uses mise.toml for development tool management with:
 ### Branch Naming Convention
 - Branch names MUST follow the pattern: `feature/[Issue番号]`
 - Examples: `feature/11`, `feature/23`
-- Create branches from the main branch
+- **ALWAYS create branches from the latest main branch**
+- Before creating a new branch, ensure you are on main and pull the latest changes
 
 ### Pull Request Process
 - Create PRs only after completing the implementation
