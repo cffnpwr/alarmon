@@ -5,7 +5,7 @@ const TOS_HIGH_RELIABILITY: u8 = 0b00100;
 const TOS_LOW_COST: u8 = 0b00010;
 const TOS_UNUSED: u8 = 0b00001;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TypeOfService {
     /// 優先順位
     /// 0-7の値をとる
@@ -27,18 +27,6 @@ pub struct TypeOfService {
     /// パケットの等価性のために必要
     /// 基本的に0
     pub unused: bool,
-}
-impl Default for TypeOfService {
-    fn default() -> Self {
-        TypeOfService {
-            precedence: 0,
-            low_delay: false,
-            high_throughput: false,
-            high_reliability: false,
-            low_cost: false,
-            unused: false,
-        }
-    }
 }
 impl From<TypeOfService> for u8 {
     fn from(value: TypeOfService) -> Self {

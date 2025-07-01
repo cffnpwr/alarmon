@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-
 #[cfg(feature = "libpcap")]
 pub use libpcap::{NetworkInterface, PcapError, open};
 

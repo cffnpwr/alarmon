@@ -103,6 +103,7 @@ impl IPv4Packet {
     /// 常に4
     pub const VERSION: u8 = 4;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         type_of_service: TypeOfService,
         total_length: u16,
@@ -155,7 +156,7 @@ impl IPv4Packet {
 
     /// IPv4パケットの実際の長さを計算
     /// ヘッダー長 + オプション長 + ペイロード長
-    pub fn len(&self) -> usize {
+    pub fn total_size(&self) -> usize {
         let header_len = (self.internet_header_length as usize) * 4;
         header_len + self.payload.len()
     }
@@ -208,7 +209,7 @@ impl IPv4Packet {
         })
     }
 
-    fn into_bytes(&self) -> Vec<u8> {
+    fn into_bytes(self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(self.total_length as usize);
 
         vec.push(Self::VERSION << 4 | self.internet_header_length);
@@ -237,7 +238,7 @@ impl From<IPv4Packet> for Vec<u8> {
 }
 impl From<&IPv4Packet> for Vec<u8> {
     fn from(packet: &IPv4Packet) -> Self {
-        packet.into_bytes()
+        packet.clone().into_bytes()
     }
 }
 impl From<IPv4Packet> for Box<[u8]> {
@@ -247,7 +248,7 @@ impl From<IPv4Packet> for Box<[u8]> {
 }
 impl From<&IPv4Packet> for Box<[u8]> {
     fn from(packet: &IPv4Packet) -> Self {
-        packet.into_bytes().into_boxed_slice()
+        packet.clone().into_bytes().into_boxed_slice()
     }
 }
 

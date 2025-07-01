@@ -1,7 +1,7 @@
 const DF_FLAG_MASK: u8 = 0b0100_0000;
 const MF_FLAG_MASK: u8 = 0b0010_0000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags {
     /// Don't Fragment
     /// データグラムをフラグメントするかどうか
@@ -10,14 +10,6 @@ pub struct Flags {
     /// More Fragments
     /// 断片化されたデータグラムがまだあるかどうか
     pub mf: bool,
-}
-impl Default for Flags {
-    fn default() -> Self {
-        Flags {
-            df: false,
-            mf: false,
-        }
-    }
 }
 impl From<Flags> for u8 {
     fn from(value: Flags) -> Self {

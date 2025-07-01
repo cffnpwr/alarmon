@@ -15,7 +15,7 @@ impl Default for IPCIDR {
 impl Display for IPCIDR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IPCIDR::V4(cidr) => write!(f, "{}", cidr),
+            IPCIDR::V4(cidr) => write!(f, "{cidr}"),
         }
     }
 }
@@ -26,7 +26,7 @@ pub enum IPv4NetmaskError {
     InvalidPrefixLength(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IPv4Netmask(u8);
 impl IPv4Netmask {
     pub const fn prefix_length(self) -> u8 {
@@ -34,7 +34,7 @@ impl IPv4Netmask {
     }
 
     fn into_address(self) -> Ipv4Addr {
-        let mask = (0xFFFFFFFFu32 << (32 - self.0)) & 0xFFFFFFFF;
+        let mask = 0xFFFFFFFFu32 << (32 - self.0);
         Ipv4Addr::from(mask.to_be_bytes())
     }
 
@@ -54,11 +54,6 @@ impl IPv4Netmask {
         } else {
             Ok(IPv4Netmask(prefix_length))
         }
-    }
-}
-impl Default for IPv4Netmask {
-    fn default() -> Self {
-        Self(0)
     }
 }
 impl Display for IPv4Netmask {
@@ -151,8 +146,9 @@ impl Display for IPv4CIDR {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::Ipv4Addr;
+
+    use super::*;
 
     // IPv4Netmask::prefix_lengthのテスト
     #[test]

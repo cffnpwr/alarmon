@@ -89,8 +89,11 @@ mod tests {
     #[test]
     fn test_hardware_type_try_from_u16() {
         // [正常系] Ethernetの値(1)から正常に変換
-        assert_eq!(HardwareType::try_from(1u16).unwrap(), HardwareType::Ethernet);
-        
+        assert_eq!(
+            HardwareType::try_from(1u16).unwrap(),
+            HardwareType::Ethernet
+        );
+
         // [異常系] 無効な値からの変換エラー
         assert!(matches!(
             HardwareType::try_from(2u16).unwrap_err(),
@@ -110,7 +113,7 @@ mod tests {
             HardwareType::try_from_bytes(&ethernet_bytes).unwrap(),
             HardwareType::Ethernet
         );
-        
+
         // [異常系] 不正なバイト長
         assert!(matches!(
             HardwareType::try_from_bytes(&[0x00]).unwrap_err(),
@@ -120,7 +123,7 @@ mod tests {
             HardwareType::try_from_bytes(&[0x00, 0x01, 0x02]).unwrap_err(),
             HardwareTypeError::InvalidBytesLength(3)
         ));
-        
+
         // [異常系] 無効な値
         assert!(matches!(
             HardwareType::try_from_bytes(&[0x00, 0x02]).unwrap_err(),

@@ -88,8 +88,11 @@ mod tests {
     #[test]
     fn test_protocol_type_try_from_u16() {
         // [正常系] IPv4の値(0x0800)から正常に変換
-        assert_eq!(ProtocolType::try_from(0x0800u16).unwrap(), ProtocolType::IPv4);
-        
+        assert_eq!(
+            ProtocolType::try_from(0x0800u16).unwrap(),
+            ProtocolType::IPv4
+        );
+
         // [異常系] 無効な値からの変換エラー
         assert!(matches!(
             ProtocolType::try_from(0x0000u16).unwrap_err(),
@@ -108,7 +111,7 @@ mod tests {
             ProtocolType::try_from_bytes(&[0x08, 0x00]).unwrap(),
             ProtocolType::IPv4
         );
-        
+
         // [異常系] 不正なバイト長
         assert!(matches!(
             ProtocolType::try_from_bytes(&[0x08]).unwrap_err(),
@@ -118,7 +121,7 @@ mod tests {
             ProtocolType::try_from_bytes(&[0x08, 0x00, 0x00]).unwrap_err(),
             ProtocolTypeError::InvalidBytesLength(3)
         ));
-        
+
         // [異常系] 無効な値
         assert!(matches!(
             ProtocolType::try_from_bytes(&[0x00, 0x00]).unwrap_err(),

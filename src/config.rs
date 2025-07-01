@@ -48,9 +48,11 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use tempfile::NamedTempFile;
+
+    use super::*;
 
     #[test]
     fn test_load() {
@@ -105,7 +107,10 @@ invalid toml content
         let result = Config::load(temp_file.path());
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::TomlParseError(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::TomlParseError(_)
+        ));
 
         // [異常系] 必須フィールドが不足しているTOMLファイルを読み込む
         let incomplete_toml = r#"
@@ -123,6 +128,9 @@ host = "192.168.1.1"
         let result = Config::load(temp_file.path());
 
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::TomlParseError(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::TomlParseError(_)
+        ));
     }
 }

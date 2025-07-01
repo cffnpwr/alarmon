@@ -138,7 +138,7 @@ impl Ping {
                         && echo_reply.sequence_number == sequence_number
                         && ipv4_packet.src == target_ip
                     {
-                        println!("Pingレスポンスを受信: {} -> {}", target_ip, src_ip);
+                        println!("Pingレスポンスを受信: {target_ip} -> {src_ip}");
                         return start_time.elapsed();
                     }
                 }

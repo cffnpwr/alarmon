@@ -92,7 +92,7 @@ mod tests {
         // [正常系] Request(1)とReply(2)の値から正常に変換
         assert_eq!(Operation::try_from(1u16).unwrap(), Operation::Request);
         assert_eq!(Operation::try_from(2u16).unwrap(), Operation::Reply);
-        
+
         // [異常系] 無効な値からの変換エラー
         assert!(matches!(
             Operation::try_from(0u16).unwrap_err(),
@@ -115,7 +115,7 @@ mod tests {
             Operation::try_from_bytes(&[0x00, 0x02]).unwrap(),
             Operation::Reply
         );
-        
+
         // [異常系] 不正なバイト長
         assert!(matches!(
             Operation::try_from_bytes(&[0x00]).unwrap_err(),
@@ -125,7 +125,7 @@ mod tests {
             Operation::try_from_bytes(&[0x00, 0x01, 0x02]).unwrap_err(),
             OperationError::InvalidBytesLength(3)
         ));
-        
+
         // [異常系] 無効な値
         assert!(matches!(
             Operation::try_from_bytes(&[0x00, 0x00]).unwrap_err(),
