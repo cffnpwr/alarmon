@@ -123,6 +123,8 @@ Network protocols are implemented using the `TryFromBytes` trait in the `tcpip` 
 - Implement only the minimum necessary tests to achieve C1 coverage
 - Group test functions by the target function being tested
 - Add descriptive comments for test cases using `[正常系] description` or `[異常系] description` format
+- Consolidate tests for a single function into one test function (e.g., `test_function_name()`)
+- Within the test function, separate test cases with comments describing each scenario
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.
