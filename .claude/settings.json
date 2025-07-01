@@ -16,5 +16,18 @@
       "Bash(rustup toolchain list)",
       "Bash(rustup component list)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path | select(endswith(\\\".rs\\\")' | xargs -r -- cargo fmt --"
+          }
+        ]
+      }
+    ]
   }
 }

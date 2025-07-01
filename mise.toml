@@ -1,4 +1,5 @@
 [tools]
 "cargo:cargo-expand" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
+jq = "latest"
 rust = "nightly"
