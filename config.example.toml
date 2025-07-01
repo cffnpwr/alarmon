@@ -1,0 +1,10 @@
+# 監視対象
+targets = [
+  # { name = 表示名, host = ホスト名 }
+  { name = "Cloudflare Primary DNS", host = "1.1.1.1" },
+  { name = "Cloudflare Secondary DNS", host = "1.0.0.1" },
+]
+# 監視間隔（秒）
+interval = 1
+# タイムアウト（秒）
+timeout = 5
