@@ -1,28 +1,31 @@
-mod arp_resolver;
-mod net_utils;
-mod ping;
-
-use std::env;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 
 use anyhow::Result;
 use arp_resolver::ArpResolver;
+use env_logger::Env;
 use ping::Ping;
 
+use crate::cli::Cli;
+use crate::config::Config;
 use crate::net_utils::netlink::{LinkType, Netlink};
+
+mod arp_resolver;
+mod cli;
+mod config;
+mod net_utils;
+mod ping;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("使用方法: {} <IPアドレス>", args[0]);
-        eprintln!("例: {} 192.168.1.2", args[0]);
-        std::process::exit(1);
-    }
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
 
-    let target_ip = Ipv4Addr::from_str(&args[1])
-        .map_err(|_| anyhow::anyhow!("無効なIPアドレス: {}", args[1]))?;
+    let cli = Cli::parse();
+    let cfg = Config::load(&cli.config)?;
+    dbg!(&cfg);
+
+    let target_ip = Ipv4Addr::from_str(&cfg.targets[0].host)
+        .map_err(|_| anyhow::anyhow!("無効なIPアドレス: {}", cfg.targets[0].host))?;
 
     // まずARPでMACアドレスを解決
     println!("ステップ1: ARPでMACアドレスを解決します...");
