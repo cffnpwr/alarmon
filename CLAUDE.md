@@ -103,6 +103,30 @@ The project uses mise.toml for development tool management with:
 - Code comments and internal documentation use English
 - Test descriptions use Japanese with `[正常系]` and `[異常系]` prefixes
 
+## Development Workflow
+
+### Issue-Based Development
+- **ALWAYS create an Issue before starting any development work**
+- Use existing Issue format: 概要, 背景, 実装要件, 受け入れ条件, テスト要件
+- Include appropriate labels for categorization
+
+### Branch Naming Convention
+- Branch names MUST follow the pattern: `feature/[Issue番号]`
+- Examples: `feature/11`, `feature/23`
+- Create branches from the main branch
+
+### Pull Request Process
+- Create PRs only after completing the implementation
+- PR titles should clearly describe the changes
+- Link the corresponding Issue in the PR description
+- Ensure all CI/CD checks pass before requesting review
+
+### GitHub Actions CI/CD
+- All PRs automatically trigger CI/CD pipeline
+- Required checks: cargo build, cargo test, cargo clippy
+- Code coverage measurement with cargo llvm-cov
+- PRs can only be merged when all checks pass
+
 ## Protocol Implementation Pattern
 
 Network protocols are implemented using the `TryFromBytes` trait in the `tcpip` crate, which provides a consistent interface for parsing byte streams into structured packet types.

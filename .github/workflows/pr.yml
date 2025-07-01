@@ -1,0 +1,103 @@
+name: Pull Request CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install libpcap development libraries (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libpcap-dev
+
+    - name: Install libpcap development libraries (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install libpcap
+
+    - name: Install mise
+      uses: jdx/mise-action@v2
+
+    - name: Install tools with mise
+      run: mise install
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Check code formatting
+      run: cargo fmt -- --check
+
+    - name: Run cargo check
+      run: cargo check --all-targets --all-features
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Run tests
+      run: cargo test --all-features --all
+
+    - name: Generate code coverage
+      run: cargo llvm-cov --all-features --all --lcov --output-path lcov-${{ matrix.os }}.info
+
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-${{ matrix.os }}
+        path: lcov-${{ matrix.os }}.info
+
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download coverage artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: coverage-*
+        merge-multiple: true
+
+    - name: Install lcov
+      run: sudo apt-get update && sudo apt-get install -y lcov
+
+    - name: Merge coverage files
+      run: |
+        lcov --add-tracefile lcov-ubuntu-latest.info --add-tracefile lcov-macos-latest.info --output-file merged-lcov.info || cp lcov-ubuntu-latest.info merged-lcov.info 2>/dev/null || cp lcov-macos-latest.info merged-lcov.info
+
+    - name: Comment coverage report
+      uses: romeovs/lcov-reporter-action@v0.3.1
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        lcov-file: merged-lcov.info
