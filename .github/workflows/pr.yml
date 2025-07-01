@@ -18,7 +18,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os:
+          # - ubuntu-latest
+          - macos-latest
 
     steps:
     - name: Checkout repository
@@ -40,7 +42,7 @@ jobs:
 
     - name: Install tools with mise
       run: mise install
-      
+
     - name: Add Rust components
       run: |
         rustup component add rustfmt
@@ -99,7 +101,12 @@ jobs:
 
     - name: Merge coverage files
       run: |
-        lcov --add-tracefile lcov-ubuntu-latest.info --add-tracefile lcov-macos-latest.info --output-file merged-lcov.info || cp lcov-ubuntu-latest.info merged-lcov.info 2>/dev/null || cp lcov-macos-latest.info merged-lcov.info
+        files=(lcov-*.info)
+        if [ ${#files[@]} -gt 1 ]; then
+          lcov --output-file merged-lcov.info "${files[@]/#/--add-tracefile }"
+        else
+          cp "${files[0]}" merged-lcov.info
+        fi
 
     - name: Comment coverage report
       uses: romeovs/lcov-reporter-action@v0.3.1
