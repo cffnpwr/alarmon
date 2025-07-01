@@ -6,7 +6,7 @@ use libpcap::{Active, Capture, Device};
 use nix::net::if_::if_nametoindex;
 use thiserror::Error;
 
-use super::{DataLinkReceiver, DataLinkSender};
+use super::{DataLinkReceiver, DataLinkSender, Pcap};
 
 #[derive(Debug, PartialEq, Eq, Error)]
 pub struct PcapError {
@@ -87,30 +87,10 @@ impl DataLinkReceiver for LibpcapDataLinkReceiver {
         .expect("spawn_blocking failed")
     }
 }
-
-pub fn open(ni: &NetworkInterface, promisc: bool) -> Result<super::Channel, PcapError> {
-    let capture = Capture::from_device(ni.name().as_str())
-        .map_err(PcapError::from)?
-        .immediate_mode(true)
-        .promisc(promisc)
-        .open()
-        .map_err(PcapError::from)?;
-    let capture = Arc::new(Mutex::new(capture));
-
-    Ok(super::Channel::Ethernet(
-        Box::new(LibpcapDataLinkSender {
-            capture: capture.clone(),
-        }),
-        Box::new(LibpcapDataLinkReceiver {
-            capture: capture.clone(),
-        }),
-    ))
-}
-
 pub struct NetworkInterface {
+    index: u32,
     name: String,
     description: String,
-    index: u32,
 }
 impl NetworkInterface {
     pub fn name(&self) -> String {
@@ -149,5 +129,25 @@ impl NetworkInterface {
             .ok()?
             .into_iter()
             .find(|ni| ni.name == name.as_ref())
+    }
+}
+impl Pcap for NetworkInterface {
+    fn open(&self, promisc: bool) -> Result<super::Channel, PcapError> {
+        let capture = Capture::from_device(self.name().as_str())
+            .map_err(PcapError::from)?
+            .immediate_mode(true)
+            .promisc(promisc)
+            .open()
+            .map_err(PcapError::from)?;
+        let capture = Arc::new(Mutex::new(capture));
+
+        Ok(super::Channel::Ethernet(
+            Box::new(LibpcapDataLinkSender {
+                capture: capture.clone(),
+            }),
+            Box::new(LibpcapDataLinkReceiver {
+                capture: capture.clone(),
+            }),
+        ))
     }
 }

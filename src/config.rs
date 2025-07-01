@@ -25,6 +25,39 @@ pub(crate) struct Target {
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct ArpConfig {
+    /// ARPテーブルのTTL(秒)
+    #[serde(default = "ArpConfig::default_ttl")]
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub(crate) ttl: Duration,
+
+    /// ARP応答のタイムアウト(秒)
+    #[serde(default = "ArpConfig::default_timeout")]
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub(crate) timeout: Duration,
+}
+
+impl ArpConfig {
+    const fn default_ttl() -> Duration {
+        Duration::seconds(30)
+    }
+
+    const fn default_timeout() -> Duration {
+        Duration::seconds(5)
+    }
+}
+
+impl Default for ArpConfig {
+    fn default() -> Self {
+        Self {
+            ttl: Self::default_ttl(),
+            timeout: Self::default_timeout(),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct Config {
     /// 監視対象のリスト
     pub(crate) targets: Vec<Target>,
@@ -36,6 +69,10 @@ pub(crate) struct Config {
     /// ICMP Echoのタイムアウト(秒)
     #[serde_as(as = "DurationSeconds<i64>")]
     pub(crate) timeout: Duration,
+
+    /// ARP設定
+    #[serde(default)]
+    pub(crate) arp: ArpConfig,
 }
 impl Config {
     pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -83,6 +120,30 @@ host = "8.8.8.8"
         assert_eq!(config.targets[1].host, "8.8.8.8");
         assert_eq!(config.interval, Duration::seconds(60));
         assert_eq!(config.timeout, Duration::seconds(5));
+        assert_eq!(config.arp.ttl, Duration::seconds(30)); // デフォルト値
+        assert_eq!(config.arp.timeout, Duration::seconds(5)); // デフォルト値
+
+        // [正常系] カスタムARP設定が指定されたTOMLファイルを読み込む
+        let toml_with_arp = r#"
+interval = 60
+timeout = 5
+
+[arp]
+ttl = 60
+timeout = 10
+
+[[targets]]
+name = "Router"
+host = "192.168.1.1"
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(toml_with_arp.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::load(temp_file.path()).unwrap();
+        assert_eq!(config.arp.ttl, Duration::seconds(60)); // カスタム値
+        assert_eq!(config.arp.timeout, Duration::seconds(10)); // カスタム値
 
         // [異常系] 存在しないファイルを読み込む
         let non_existent_path = "/path/to/non/existent/file.toml";
