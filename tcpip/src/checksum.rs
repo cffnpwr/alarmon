@@ -1,20 +1,19 @@
 /// Internet Checksum 計算モジュール
-/// 
+///
 /// RFC 1071に準拠したInternet Checksumの実装
 /// IPv4ヘッダーチェックサムやICMPチェックサムで使用される
-
 /// Internet Checksumを計算
-/// 
+///
 /// # Arguments
 /// * `data` - チェックサムを計算するデータ
-/// 
+///
 /// # Returns
 /// 16ビットのチェックサム値
-/// 
+///
 /// # Example
 /// ```
 /// use tcpip::checksum::calculate_internet_checksum;
-/// 
+///
 /// let data = vec![0x45, 0x00, 0x00, 0x3c];
 /// let checksum = calculate_internet_checksum(&data);
 /// ```
@@ -85,10 +84,10 @@ mod tests {
         // [正常系] チェックサム検証テスト
         let mut data = vec![0x45, 0x00, 0x00, 0x3c];
         let original_checksum = calculate_internet_checksum(&data);
-        
+
         // チェックサム値をデータに挿入
         data.extend_from_slice(&original_checksum.to_be_bytes());
-        
+
         // チェックサムを含むデータのチェックサムは0になるべき
         let verification_checksum = calculate_internet_checksum(&data);
         assert_eq!(verification_checksum, 0);

@@ -70,7 +70,7 @@ impl TryFrom<&str> for MacAddr {
             .iter()
             .map(|part| u8::from_str_radix(part, 16))
             .collect::<Result<Vec<u8>, _>>()
-            .map_err(|e| MacAddrError::MacAddrParseError(e))?;
+            .map_err(MacAddrError::MacAddrParseError)?;
 
         parts.try_into()
     }

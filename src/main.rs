@@ -31,10 +31,10 @@ async fn main() -> Result<()> {
     println!("ステップ1: ARPでMACアドレスを解決します...");
     let netlink = Netlink::new()?;
     let route = netlink.get_route(target_ip)?;
-    println!("成功: {} のルート情報は {:#?}", target_ip, route);
+    println!("成功: {target_ip} のルート情報は {route:#?}");
 
     if route.link_type == LinkType::RawIP {
-        println!("{} はRawIPリンクタイプです。ARPは不要です。", target_ip);
+        println!("{target_ip} はRawIPリンクタイプです。ARPは不要です。");
         return Ok(());
     }
 
@@ -50,16 +50,16 @@ async fn main() -> Result<()> {
     };
 
     let mac_addr = ArpResolver::resolve(arp_target_ip).await?;
-    println!("成功: {} のMACアドレスは {} です", arp_target_ip, mac_addr);
+    println!("成功: {arp_target_ip} のMACアドレスは {mac_addr} です");
 
     // 次にICMP pingを実行
     println!("\nステップ2: ICMP pingを実行します...");
     match Ping::ping(target_ip, mac_addr, 5).await {
         Ok(duration) => {
-            println!("成功: {} からの応答時間 {:?}", target_ip, duration);
+            println!("成功: {target_ip} からの応答時間 {duration:?}");
         }
         Err(e) => {
-            eprintln!("Pingエラー: {}", e);
+            eprintln!("Pingエラー: {e}");
             std::process::exit(1);
         }
     }

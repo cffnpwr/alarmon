@@ -2,7 +2,6 @@ use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use libpcap;
 use libpcap::{Active, Capture, Device};
 use nix::net::if_::if_nametoindex;
 use thiserror::Error;
@@ -18,7 +17,7 @@ impl Clone for PcapError {
         Self {
             inner: match &self.inner {
                 libpcap::Error::MalformedError(utf8_error) => {
-                    libpcap::Error::MalformedError(utf8_error.clone())
+                    libpcap::Error::MalformedError(*utf8_error)
                 }
                 libpcap::Error::InvalidString => libpcap::Error::InvalidString,
                 libpcap::Error::PcapError(err) => libpcap::Error::PcapError(err.clone()),
@@ -28,9 +27,9 @@ impl Clone for PcapError {
                 libpcap::Error::NonNonBlock => libpcap::Error::NonNonBlock,
                 libpcap::Error::InsufficientMemory => libpcap::Error::InsufficientMemory,
                 libpcap::Error::InvalidInputString => libpcap::Error::InvalidInputString,
-                libpcap::Error::IoError(error_kind) => libpcap::Error::IoError(error_kind.clone()),
+                libpcap::Error::IoError(error_kind) => libpcap::Error::IoError(*error_kind),
                 libpcap::Error::InvalidRawFd => libpcap::Error::InvalidRawFd,
-                libpcap::Error::ErrnoError(errno) => libpcap::Error::ErrnoError(errno.clone()),
+                libpcap::Error::ErrnoError(errno) => libpcap::Error::ErrnoError(*errno),
                 libpcap::Error::BufferOverflow => libpcap::Error::BufferOverflow,
             },
         }

@@ -177,28 +177,28 @@ impl TryFromBytes for ICMPMessage {
 
         match message_type {
             MessageType::Echo => EchoMessage::try_from(bytes)
-                .map(|echo_msg| ICMPMessage::Echo(echo_msg))
+                .map(ICMPMessage::Echo)
                 .map_err(ICMPError::from),
             MessageType::EchoReply => EchoMessage::try_from(bytes)
-                .map(|echo_msg| ICMPMessage::EchoReply(echo_msg))
+                .map(ICMPMessage::EchoReply)
                 .map_err(ICMPError::from),
             MessageType::DestinationUnreachable => DestinationUnreachableMessage::try_from(bytes)
-                .map(|dest_msg| ICMPMessage::DestinationUnreachable(dest_msg))
+                .map(ICMPMessage::DestinationUnreachable)
                 .map_err(ICMPError::from),
             MessageType::Redirect => RedirectMessage::try_from(bytes)
-                .map(|redirect_msg| ICMPMessage::Redirect(redirect_msg))
+                .map(ICMPMessage::Redirect)
                 .map_err(ICMPError::from),
             MessageType::TimeExceeded => TimeExceededMessage::try_from(bytes)
-                .map(|time_msg| ICMPMessage::TimeExceeded(time_msg))
+                .map(ICMPMessage::TimeExceeded)
                 .map_err(ICMPError::from),
             MessageType::ParameterProblem => ParameterProblemMessage::try_from(bytes)
-                .map(|param_msg| ICMPMessage::ParameterProblem(param_msg))
+                .map(ICMPMessage::ParameterProblem)
                 .map_err(ICMPError::from),
             MessageType::Timestamp => TimestampMessage::try_from(bytes)
-                .map(|timestamp_msg| ICMPMessage::Timestamp(timestamp_msg))
+                .map(ICMPMessage::Timestamp)
                 .map_err(ICMPError::from),
             MessageType::TimestampReply => TimestampMessage::try_from(bytes)
-                .map(|timestamp_msg| ICMPMessage::TimestampReply(timestamp_msg))
+                .map(ICMPMessage::TimestampReply)
                 .map_err(ICMPError::from),
         }
     }
@@ -460,7 +460,6 @@ mod tests {
 
         assert_eq!(original, parsed);
     }
-
 
     // ICMPMessageのテスト
     #[test]

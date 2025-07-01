@@ -50,9 +50,9 @@ impl EthernetFrame {
         payload: impl AsRef<[u8]>,
     ) -> Self {
         EthernetFrame {
-            src: src.clone(),
-            dst: dst.clone(),
-            ether_type: ether_type.clone(),
+            src: *src,
+            dst: *dst,
+            ether_type: *ether_type,
             vlan: vlan.cloned(),
             payload: payload.as_ref().to_vec(),
         }

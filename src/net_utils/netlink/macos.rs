@@ -184,16 +184,15 @@ impl Netlink {
             .map_err(|e| NetlinkError::PfRouteSendError(e.kind()))?;
 
         // PF_ROUTEソケットからの応答を受信
-        let mut buf = unsafe {
+        let buf = unsafe {
             slice::from_raw_parts_mut(&rt_msg as *const rt_msg as *mut MaybeUninit<u8>, rt_msg_len)
         };
         let recv_len = self
             .pf_route_sock
-            .recv(&mut buf)
+            .recv(buf)
             .map_err(|e| NetlinkError::PfRouteReceiveError(e.kind()))?;
-        let entry = self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len);
 
-        entry
+        self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len)
     }
 
     /// IPv4アドレスをsockaddr_inのバイト配列に変換
@@ -215,7 +214,7 @@ impl Netlink {
         // sockaddr_inのバイト配列をコピー
         let sa_ptr = &sa_in as *const sockaddr_in as *const u8;
         let sa_bytes = unsafe { slice::from_raw_parts(sa_ptr, sa_len) };
-        (&mut rt_msg.attrs[attr_offset..attr_offset + sa_len]).copy_from_slice(sa_bytes);
+        rt_msg.attrs[attr_offset..attr_offset + sa_len].copy_from_slice(sa_bytes);
         attr_offset + align(sa_len)
     }
 
@@ -234,7 +233,7 @@ impl Netlink {
                 continue; // このアドレスは存在しない
             }
 
-            let sa = unsafe { mem::transmute::<*const u8, &sockaddr>(payload.as_ptr()) };
+            let sa = unsafe { &*payload.as_ptr().cast::<sockaddr>() };
             let mut sa_len = sa.sa_len as usize;
             if sa_len == 0 {
                 sa_len = 4; // sockaddr_inの最小サイズ

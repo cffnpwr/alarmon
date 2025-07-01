@@ -129,7 +129,7 @@ impl From<ParameterProblemMessage> for Vec<u8> {
 
 impl From<&ParameterProblemMessage> for Vec<u8> {
     fn from(value: &ParameterProblemMessage) -> Self {
-        let mut bytes = Vec::with_capacity(8 + value.original_datagram.len());
+        let mut bytes = Vec::with_capacity(8 + value.original_datagram.total_size());
 
         // Type (1 byte)
         bytes.push(MessageType::ParameterProblem.into());

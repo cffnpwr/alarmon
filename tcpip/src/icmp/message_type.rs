@@ -27,7 +27,6 @@ pub enum MessageType {
     /// 宛先到達不可
     DestinationUnreachable = 3,
 
-
     /// Redirect
     /// リダイレクト
     Redirect = 5,

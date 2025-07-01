@@ -9,22 +9,12 @@ pub(crate) use self::macos::{Netlink, NetlinkError};
 #[cfg(target_os = "macos")]
 mod macos;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct NetworkInterface {
     pub(crate) index: u32,
     pub(crate) name: String,
     pub(crate) mac_addr: MacAddr,
     pub(crate) ip_addrs: Vec<IPCIDR>,
-}
-impl Default for NetworkInterface {
-    fn default() -> Self {
-        Self {
-            index: 0,
-            name: String::new(),
-            mac_addr: MacAddr::default(),
-            ip_addrs: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +36,7 @@ pub(crate) struct RouteEntry {
     pub(crate) link_type: LinkType,
 }
 impl RouteEntry {
+    #[allow(dead_code)]
     pub(crate) fn new(
         interface: &NetworkInterface,
         to: &IpAddr,
@@ -54,7 +45,7 @@ impl RouteEntry {
     ) -> Self {
         Self {
             interface: interface.clone(),
-            to: to.clone(),
+            to: *to,
             via: via.cloned(),
             link_type: link_type.clone(),
         }

@@ -12,6 +12,7 @@ pub enum VLANTagPIDError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VLANTagPID {
     /// VLAN
+    #[allow(clippy::upper_case_acronyms)]
     VLAN = 0x8100,
 
     /// QinQ
@@ -139,7 +140,7 @@ impl VLANTag {
             return Err(VLANTagError::InvalidVlanVID(vid));
         }
         Ok(VLANTag {
-            tpid: tpid.clone(),
+            tpid: *tpid,
             pcp,
             dei,
             vid,
