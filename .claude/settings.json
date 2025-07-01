@@ -14,7 +14,10 @@
       "Bash(rustup --version)",
       "Bash(rustup show)",
       "Bash(rustup toolchain list)",
-      "Bash(rustup component list)"
+      "Bash(rustup component list)",
+      "Bash(gh api repos/{owner}/{repo}/issues*)",
+      "Bash(gh api repos/{owner}/{repo}/issues/*/sub_issues)",
+      "Bash(gh --version)"
     ]
   },
   "hooks": {
