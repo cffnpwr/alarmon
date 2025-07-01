@@ -51,6 +51,7 @@ impl RouteEntry {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_gateway(&self) -> bool {
         self.via.is_some()
     }

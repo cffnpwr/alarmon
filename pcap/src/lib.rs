@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 #[cfg(feature = "libpcap")]
-pub use libpcap::{NetworkInterface, PcapError, open};
+pub use libpcap::{NetworkInterface, PcapError};
 
 #[cfg(feature = "libpcap")]
 mod libpcap;
+
+pub trait Pcap {
+    fn open(&self, promisc: bool) -> Result<Channel, PcapError>;
+}
 
 #[async_trait]
 pub trait DataLinkSender {

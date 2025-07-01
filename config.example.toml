@@ -8,3 +8,10 @@ targets = [
 interval = 1
 # タイムアウト（秒）
 timeout = 5
+
+# ARP設定 - オプション
+[arp]
+# ARPテーブルのTTL（秒） - デフォルト30秒
+ttl = 30
+# ARP応答のタイムアウト（秒） - デフォルト5秒
+timeout = 5

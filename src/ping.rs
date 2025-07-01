@@ -1,13 +1,15 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use pcap::PcapError;
-use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError, MacAddr, MacAddrError};
+use pcap::{Pcap as _, PcapError};
+use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError, MacAddrError};
 use tcpip::icmp::{ICMPError, ICMPMessage};
 use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
 use thiserror::Error;
 use tokio::time::{Instant, timeout};
 
+use crate::config::ArpConfig;
+use crate::net_utils::arp_table::{ArpTable, ArpTableError};
 use crate::net_utils::netlink::{Netlink, NetlinkError};
 
 #[derive(Debug, Error)]
@@ -22,6 +24,8 @@ pub enum PingError {
     MacAddressError(#[from] MacAddrError),
     #[error(transparent)]
     ICMPError(#[from] ICMPError),
+    #[error(transparent)]
+    ArpTableError(#[from] ArpTableError),
     #[error("Network interface '{0}' not found")]
     InterfaceNotFound(String),
     #[error("No IPv4 address found on interface {0}")]
@@ -30,15 +34,22 @@ pub enum PingError {
     Timeout,
 }
 
-pub struct Ping;
+pub struct Ping {
+    arp_table: ArpTable,
+}
 
 impl Ping {
-    pub async fn ping(
-        target_ip: Ipv4Addr,
-        target_mac: MacAddr,
-        timeout_sec: u64,
-    ) -> Result<Duration, PingError> {
+    pub fn new(arp_config: &ArpConfig) -> Self {
+        Self {
+            arp_table: ArpTable::new(arp_config),
+        }
+    }
+
+    pub async fn ping(&self, target_ip: Ipv4Addr, timeout_sec: u64) -> Result<Duration, PingError> {
         let start_time = Instant::now();
+
+        // ARPテーブルからMACアドレスを解決
+        let target_mac = self.arp_table.get_or_resolve(target_ip).await?;
 
         // ルーティング情報を取得
         let netlink = Netlink::new()?;
@@ -51,7 +62,7 @@ impl Ping {
         let ni = pcap::NetworkInterface::find_by_name(&best_route.interface.name)
             .ok_or_else(|| PingError::InterfaceNotFound(best_route.interface.name.clone()))?;
 
-        let cap = pcap::open(&ni, false).map_err(PingError::PcapError)?;
+        let cap = ni.open(false)?;
         let (mut sender, mut receiver) = match cap {
             pcap::Channel::Ethernet(s, r) => (s, r),
         };
