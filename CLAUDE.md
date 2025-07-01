@@ -110,6 +110,31 @@ The project uses mise.toml for development tool management with:
 - Use existing Issue format: 概要, 背景, 実装要件, 受け入れ条件, テスト要件
 - Include appropriate labels for categorization
 
+#### Sub-Issue Management
+GitHub's sub-issue feature allows breaking down large work into smaller, manageable tasks with hierarchical structure.
+
+**Sub-Issue API Operations via GitHub CLI:**
+```bash
+# List sub-issues for a parent issue
+gh api repos/{owner}/{repo}/issues/{issue_number}/sub_issues
+
+# Add existing issue as sub-issue
+gh api -X POST repos/{owner}/{repo}/issues/{issue_number}/sub_issues -f sub_issue_id={sub_issue_id}
+
+# Remove sub-issue from parent
+gh api -X DELETE repos/{owner}/{repo}/issues/{issue_number}/sub_issue -f sub_issue_id={sub_issue_id}
+
+# Reprioritize sub-issue position
+gh api -X PATCH repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority -f sub_issue_id={sub_issue_id} -f after_id={after_id}
+```
+
+**Sub-Issue Guidelines:**
+- Use sub-issues for complex features requiring multiple implementation steps
+- Maximum 100 sub-issues per parent issue, up to 8 levels of nesting
+- Sub-issues provide visual progress tracking with `sub_issues_summary` data
+- Cross-repository sub-issues are supported
+- Requires "triage" permissions for sub-issue operations
+
 ### Branch Naming Convention
 - Branch names MUST follow the pattern: `feature/[Issue番号]`
 - Examples: `feature/11`, `feature/23`
