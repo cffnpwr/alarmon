@@ -1,7 +1,7 @@
 ---
 name: バグ報告 / Bug Report
 about: バグや不具合の報告を作成する
-title: '[BUG] '
+title: 'bug: '
 labels: bug
 assignees: ''
 ---
