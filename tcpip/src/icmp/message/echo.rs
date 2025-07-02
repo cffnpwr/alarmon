@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -22,7 +23,7 @@ pub enum EchoMessageError {
 /// RFC 792で定義されたEcho Request (Type 8) とEcho Reply (Type 0) のメッセージ構造
 /// pingコマンドで使用されるICMPメッセージ
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = EchoMessageError, types = [&[u8], Vec<u8>, Box<[u8]>])]
+#[auto_try_from(method = try_from_bytes, error = EchoMessageError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub struct EchoMessage {
     /// Is reply
     /// Echo RequestかEcho Replyかを示すフラグ
@@ -41,7 +42,7 @@ pub struct EchoMessage {
 
     /// Data
     /// Echoメッセージのデータ部分（可変長）
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 impl EchoMessage {
@@ -57,7 +58,7 @@ impl EchoMessage {
             checksum: 0, // チェックサムは後で計算するため、初期値は0
             identifier,
             sequence_number,
-            data: data.as_ref().to_vec(),
+            data: Bytes::copy_from_slice(data.as_ref()),
         };
 
         // チェックサムを計算して設定
@@ -92,7 +93,7 @@ impl TryFromBytes for EchoMessage {
         let checksum = u16::from_be_bytes([bytes[2], bytes[3]]);
         let identifier = u16::from_be_bytes([bytes[4], bytes[5]]);
         let sequence_number = u16::from_be_bytes([bytes[6], bytes[7]]);
-        let data = bytes[8..].to_vec();
+        let data = Bytes::copy_from_slice(&bytes[8..]);
 
         Ok(EchoMessage {
             is_reply,
@@ -162,7 +163,7 @@ mod tests {
         let echo = EchoMessage::try_from_bytes(&bytes).unwrap();
         assert_eq!(echo.identifier, 0x1234);
         assert_eq!(echo.sequence_number, 0x5678);
-        assert_eq!(echo.data, b"Hello");
+        assert_eq!(echo.data.as_ref(), b"Hello");
 
         // [正常系] 最小サイズ（データなし）のパース
         let bytes = [
@@ -176,7 +177,7 @@ mod tests {
         let echo = EchoMessage::try_from_bytes(&bytes).unwrap();
         assert_eq!(echo.identifier, 0x1234);
         assert_eq!(echo.sequence_number, 0x5678);
-        assert_eq!(echo.data, Vec::<u8>::new());
+        assert_eq!(echo.data, Bytes::new());
 
         // [異常系] 不正な長さ
         let short_bytes = [0x08, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56]; // 7バイト（8バイト未満）

@@ -5,8 +5,11 @@ mod type_of_service;
 
 use std::net::Ipv4Addr;
 
+use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
+
+use crate::TryFromBytes;
 
 pub use self::flags::Flags;
 pub use self::protocol::Protocol;
@@ -43,7 +46,7 @@ pub enum IPv4Error {
 /// - [RFC 791 - Internet Protocol](https://tools.ietf.org/rfc/rfc791.txt)
 /// - [IANA Protocol Numbers](https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = IPv4Error, types = [&[u8], Vec<u8>, Box<[u8]>])]
+#[auto_try_from(method = try_from_bytes, error = IPv4Error, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub struct IPv4Packet {
     /// IP Headerの長さ
     /// ４Byte単位で表される
@@ -92,11 +95,11 @@ pub struct IPv4Packet {
 
     /// Options
     /// オプションフィールド
-    pub options: Vec<u8>,
+    pub options: Bytes,
 
     /// Payload
     /// ペイロード
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 impl IPv4Packet {
     /// バージョン
@@ -117,14 +120,14 @@ impl IPv4Packet {
         options: impl AsRef<[u8]>,
         payload: impl AsRef<[u8]>,
     ) -> Self {
-        let mut options = options.as_ref().to_vec();
-        let opts_padding_size = options.len() % 4;
+        let mut options_vec = options.as_ref().to_vec();
+        let opts_padding_size = options_vec.len() % 4;
         if opts_padding_size != 0 {
             // オプションフィールドは4バイト境界でパディングする必要がある
             let padding_size = 4 - opts_padding_size;
-            options.extend(vec![0; padding_size]);
+            options_vec.extend(vec![0; padding_size]);
         }
-        let ihl = (20 + options.len()) / 4; // IPヘッダーの長さは20バイト（5 * 4） + オプションの長さ
+        let ihl = (20 + options_vec.len()) / 4; // IPヘッダーの長さは20バイト（5 * 4） + オプションの長さ
 
         let mut packet = Self {
             internet_header_length: ihl as u8,
@@ -138,8 +141,8 @@ impl IPv4Packet {
             header_checksum: 0, // checksumは後で計算する
             src,
             dst,
-            options,
-            payload: payload.as_ref().to_vec(),
+            options: Bytes::from(options_vec),
+            payload: Bytes::copy_from_slice(payload.as_ref()),
         };
         packet.header_checksum = packet.calculate_checksum();
         packet
@@ -161,7 +164,12 @@ impl IPv4Packet {
         header_len + self.payload.len()
     }
 
-    pub fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, IPv4Error> {
+}
+
+impl TryFromBytes for IPv4Packet {
+    type Error = IPv4Error;
+
+    fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, IPv4Error> {
         let value = value.as_ref();
         if value.len() < 20 {
             // IPv4パケットは最低でも20バイトのヘッダーが必要
@@ -189,8 +197,8 @@ impl IPv4Packet {
         let src = Ipv4Addr::new(value[12], value[13], value[14], value[15]);
         let dst = Ipv4Addr::new(value[16], value[17], value[18], value[19]);
         let header_end = (ihl as usize) * 4;
-        let options = value[20..header_end].to_vec();
-        let payload = value[header_end..].to_vec();
+        let options = Bytes::copy_from_slice(&value[20..header_end]);
+        let payload = Bytes::copy_from_slice(&value[header_end..]);
 
         Ok(Self {
             internet_header_length: ihl,
@@ -208,7 +216,9 @@ impl IPv4Packet {
             payload,
         })
     }
+}
 
+impl IPv4Packet {
     fn into_bytes(self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(self.total_length as usize);
 
@@ -226,8 +236,8 @@ impl IPv4Packet {
         vec.extend_from_slice(&self.header_checksum.to_be_bytes());
         vec.extend_from_slice(&self.src.octets());
         vec.extend_from_slice(&self.dst.octets());
-        vec.extend(self.options.iter().cloned());
-        vec.extend(self.payload.iter().cloned());
+        vec.extend_from_slice(&self.options);
+        vec.extend_from_slice(&self.payload);
         vec
     }
 }

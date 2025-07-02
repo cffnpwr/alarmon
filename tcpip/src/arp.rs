@@ -58,7 +58,7 @@ pub enum ARPError {
 /// - [RFC 826 - Ethernet Address Resolution Protocol](https://tools.ietf.org/rfc/rfc826.txt)
 /// - [IANA ARP Parameters](https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = ARPError, types = [&[u8], Vec<u8>, Box<[u8]>])]
+#[auto_try_from(method = try_from_bytes, error = ARPError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub enum ARPPacket {
     EthernetIPv4(ARPPacketInner<MacAddr, Ipv4Addr>),
 }
