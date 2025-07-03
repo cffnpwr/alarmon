@@ -1,6 +1,7 @@
 # 監視対象
 targets = [
   # { name = 表示名, host = ホスト名 }
+  # { name = "loopback", host = "127.0.0.1" },
   { name = "Cloudflare Primary DNS", host = "1.1.1.1" },
   { name = "Cloudflare Secondary DNS", host = "1.0.0.1" },
 ]

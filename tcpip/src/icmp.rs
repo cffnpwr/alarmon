@@ -55,7 +55,7 @@ pub enum ICMPError {
 /// - [RFC 792 - Internet Control Message Protocol](https://tools.ietf.org/rfc/rfc792.txt)
 /// - [IANA ICMP Type Numbers](https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = ICMPError, types = [&[u8], Vec<u8>, Box<[u8]>])]
+#[auto_try_from(method = try_from_bytes, error = ICMPError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub enum ICMPMessage {
     EchoReply(EchoMessage),
     DestinationUnreachable(DestinationUnreachableMessage),
@@ -471,7 +471,7 @@ mod tests {
             ICMPMessage::Echo(echo_msg) => {
                 assert_eq!(echo_msg.identifier, 0x1234);
                 assert_eq!(echo_msg.sequence_number, 0x5678);
-                assert_eq!(echo_msg.data, b"Hello");
+                assert_eq!(echo_msg.data.as_ref(), b"Hello");
             }
             _ => panic!("Expected Echo message"),
         }

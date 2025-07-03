@@ -1,7 +1,7 @@
 ---
 name: 機能要求 / Feature Request
 about: 新機能の実装要求を作成する
-title: '[FEATURE] '
+title: 'feat: '
 labels: enhancement, feature
 assignees: ''
 ---

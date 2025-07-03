@@ -2,11 +2,13 @@ mod ether_type;
 mod mac_address;
 mod vlan;
 
+use bytes::Bytes;
 use thiserror::Error;
 
 pub use self::ether_type::{EtherType, EtherTypeError};
 pub use self::mac_address::{MacAddr, MacAddrError};
 pub use self::vlan::{VLAN, VLANError};
+use crate::TryFromBytes;
 
 /// Ethernetフレーム処理に関するエラー
 ///
@@ -38,7 +40,7 @@ pub struct EthernetFrame {
     pub dst: MacAddr,
     pub ether_type: EtherType,
     pub vlan: Option<VLAN>,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 impl EthernetFrame {
@@ -54,11 +56,15 @@ impl EthernetFrame {
             dst: *dst,
             ether_type: *ether_type,
             vlan: vlan.cloned(),
-            payload: payload.as_ref().to_vec(),
+            payload: Bytes::copy_from_slice(payload.as_ref()),
         }
     }
+}
 
-    pub fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, EthernetFrameError> {
+impl TryFromBytes for EthernetFrame {
+    type Error = EthernetFrameError;
+
+    fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, Self::Error> {
         let value = value.as_ref();
         let frame_length = value.len();
         // 本来は最小フレームサイズが６４Byteであるが、キャプチャ手段によってはパディングが削られるので最大サイズのみチェックする
@@ -87,7 +93,7 @@ impl EthernetFrame {
             ether_type => (ether_type, None, 0),
         };
         // ペイロードを取得
-        let payload = value[14 + vlan_offset..].to_vec();
+        let payload = Bytes::copy_from_slice(&value[14 + vlan_offset..]);
 
         Ok(EthernetFrame {
             src: src_mac,
@@ -124,7 +130,7 @@ impl TryFrom<EthernetFrame> for Vec<u8> {
     type Error = EthernetFrameError;
 
     fn try_from(value: EthernetFrame) -> Result<Self, Self::Error> {
-        let mut value = value;
+        let value = value;
         let vlan_size = match value.vlan {
             Some(VLAN::Tag(_)) => 4,
             Some(VLAN::QinQ { .. }) => 8,
@@ -135,15 +141,16 @@ impl TryFrom<EthernetFrame> for Vec<u8> {
             return Err(EthernetFrameError::InvalidFrame);
         }
         // Ethernet Frameのサイズが６０Byte未満の場合、パディングを追加
-        let frame_size = if frame_size < 60 {
+        let payload = if frame_size < 60 {
             let padsize = 60 - frame_size;
-            let padding = vec![0u8; padsize];
-            value.payload.extend(padding);
-
-            60
+            let mut padded_payload = value.payload.to_vec();
+            padded_payload.extend(vec![0u8; padsize]);
+            padded_payload
         } else {
-            frame_size
+            value.payload.to_vec()
         };
+
+        let frame_size = if frame_size < 60 { 60 } else { frame_size };
 
         let mut bytes = Vec::with_capacity(frame_size);
         let dst: [u8; 6] = value.dst.into();
@@ -157,7 +164,7 @@ impl TryFrom<EthernetFrame> for Vec<u8> {
             bytes.extend_from_slice(&vlan_bytes);
         }
         bytes.extend_from_slice(&ether_type);
-        bytes.extend(value.payload);
+        bytes.extend(payload);
         Ok(bytes)
     }
 }
@@ -210,7 +217,7 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
+        let payload = Bytes::from(vec![0u8; 46]);
 
         let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
         assert_eq!(frame.src, src_mac);
@@ -226,7 +233,7 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
+        let payload = Bytes::from(vec![0u8; 46]);
         let expected = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
 
         // TryFrom &[u8]
@@ -285,7 +292,7 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
+        let payload = Bytes::from(vec![0u8; 46]);
 
         // Into Vec<u8>
         let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
