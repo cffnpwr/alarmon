@@ -9,12 +9,11 @@ use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
-use crate::TryFromBytes;
-
 pub use self::flags::Flags;
 pub use self::protocol::Protocol;
 use self::protocol::ProtocolError;
 pub use self::type_of_service::TypeOfService;
+use crate::TryFromBytes;
 use crate::checksum::calculate_internet_checksum;
 
 const FLAG_MASK: u8 = 0b1110_0000;
@@ -163,7 +162,6 @@ impl IPv4Packet {
         let header_len = (self.internet_header_length as usize) * 4;
         header_len + self.payload.len()
     }
-
 }
 
 impl TryFromBytes for IPv4Packet {
