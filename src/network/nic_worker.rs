@@ -109,6 +109,7 @@ impl NicWorker {
     /// # Returns
     /// * `Ok((NicWorker, mpsc::Sender<IPv4Packet>, FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>))` - (NIC Worker, NICへの送信用チャネル, 宛先IPアドレスごとのNICからの受信用チャネル)
     /// * `Err(NicWorkerError)` - エラー
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(
         token: CancellationToken,
         cfg: &Config,
@@ -519,7 +520,7 @@ mod tests {
         let token = CancellationToken::new();
         let ni = create_test_network_interface();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
-        let targets = vec![Ipv4Addr::new(192, 168, 1, 1)];
+        let targets = [Ipv4Addr::new(192, 168, 1, 1)];
 
         let mock_sender = Box::new(MockSender::new());
         let mock_receiver = Box::new(MockReceiver::new());
