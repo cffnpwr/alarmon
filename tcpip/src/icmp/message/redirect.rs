@@ -1,6 +1,5 @@
 use std::net::Ipv4Addr;
 
-use bytes::{Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -153,14 +152,20 @@ impl TryFromBytes for RedirectMessage {
     }
 }
 
-impl From<RedirectMessage> for Bytes {
+impl From<RedirectMessage> for Vec<u8> {
     fn from(value: RedirectMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
+        (&value).into()
+    }
+}
+
+impl From<&RedirectMessage> for Vec<u8> {
+    fn from(value: &RedirectMessage) -> Self {
+        let mut bytes = Vec::with_capacity(8 + value.original_datagram.total_size());
 
         // Type (1 byte)
-        bytes.extend_from_slice(&[MessageType::Redirect.into()]);
+        bytes.push(MessageType::Redirect.into());
         // Code (1 byte)
-        bytes.extend_from_slice(&[value.code.into()]);
+        bytes.push(value.code.into());
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Gateway Address (4 bytes)
@@ -168,25 +173,7 @@ impl From<RedirectMessage> for Bytes {
         // Original Datagram (variable length)
         bytes.extend_from_slice(&Vec::from(&value.original_datagram));
 
-        bytes.freeze()
-    }
-}
-
-impl From<&RedirectMessage> for Bytes {
-    fn from(value: &RedirectMessage) -> Self {
-        value.clone().into()
-    }
-}
-
-impl From<RedirectMessage> for Vec<u8> {
-    fn from(value: RedirectMessage) -> Self {
-        Bytes::from(value).to_vec()
-    }
-}
-
-impl From<&RedirectMessage> for Vec<u8> {
-    fn from(value: &RedirectMessage) -> Self {
-        Bytes::from(value).to_vec()
+        bytes
     }
 }
 
@@ -201,6 +188,7 @@ mod tests {
     fn create_test_ipv4_packet(payload: &[u8]) -> IPv4Packet {
         IPv4Packet::new(
             TypeOfService::default(),
+            20 + payload.len() as u16,
             1,
             Flags::default(),
             0,

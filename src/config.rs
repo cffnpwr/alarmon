@@ -63,37 +63,16 @@ pub(crate) struct Config {
     pub(crate) targets: Vec<Target>,
 
     /// ICMP Echoの送信間隔(秒)
-    /// デフォルトは1秒
     #[serde_as(as = "DurationSeconds<i64>")]
-    #[serde(default = "Config::default_interval")]
     pub(crate) interval: Duration,
 
     /// ICMP Echoのタイムアウト(秒)
-    /// デフォルトは5秒
     #[serde_as(as = "DurationSeconds<i64>")]
-    #[serde(default = "Config::default_timeout")]
     pub(crate) timeout: Duration,
-
-    /// 受信パケットを保持するためのバッファのサイズ
-    /// デフォルトは1000パケット
-    #[serde(default = "Config::default_buffer_size")]
-    pub(crate) buffer_size: usize,
 
     /// ARP設定
     #[serde(default)]
     pub(crate) arp: ArpConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            targets: Vec::new(),
-            interval: Self::default_interval(),
-            timeout: Self::default_timeout(),
-            buffer_size: Self::default_buffer_size(),
-            arp: ArpConfig::default(),
-        }
-    }
 }
 impl Config {
     pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -101,21 +80,6 @@ impl Config {
         let content = fs::read_to_string(path)
             .map_err(|e| ConfigError::LoadFileError(path.to_path_buf(), e.kind()))?;
         toml::from_str(&content).map_err(ConfigError::TomlParseError)
-    }
-
-    /// デフォルトのICMP Echo送信間隔
-    const fn default_interval() -> Duration {
-        Duration::seconds(1)
-    }
-
-    /// デフォルトのICMP Echoタイムアウト
-    const fn default_timeout() -> Duration {
-        Duration::seconds(5)
-    }
-
-    /// デフォルトのバッファサイズ
-    const fn default_buffer_size() -> usize {
-        1000
     }
 }
 
@@ -209,10 +173,10 @@ invalid toml content
             ConfigError::TomlParseError(_)
         ));
 
-        // [正常系] timeoutフィールドがない場合はデフォルト値が使用される
+        // [異常系] 必須フィールドが不足しているTOMLファイルを読み込む
         let incomplete_toml = r#"
 interval = 60
-# timeout is missing, should use default
+# timeout is missing
 [[targets]]
 name = "Router"
 host = "192.168.1.1"
@@ -224,8 +188,10 @@ host = "192.168.1.1"
 
         let result = Config::load(temp_file.path());
 
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.timeout, Duration::seconds(5)); // デフォルト値
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::TomlParseError(_)
+        ));
     }
 }

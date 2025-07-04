@@ -16,52 +16,6 @@ pub(crate) struct NetworkInterface {
     pub(crate) mac_addr: MacAddr,
     pub(crate) ip_addrs: Vec<IPCIDR>,
 }
-impl NetworkInterface {
-    pub(crate) fn get_best_source_ip(&self, target_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
-        let mut best_match: Option<(Ipv4Addr, u8)> = None;
-
-        for ip_cidr in &self.ip_addrs {
-            let IPCIDR::V4(ipv4_cidr) = ip_cidr;
-            if ipv4_cidr.contains(target_ip) {
-                let prefix_length = ipv4_cidr.netmask.prefix_length();
-
-                match best_match {
-                    None => {
-                        best_match = Some((ipv4_cidr.address, prefix_length));
-                    }
-                    Some((_, current_prefix)) => {
-                        if prefix_length > current_prefix {
-                            best_match = Some((ipv4_cidr.address, prefix_length));
-                        }
-                    }
-                }
-            }
-        }
-
-        match best_match {
-            Some((ip, _)) => Some(ip),
-            None => {
-                if let Some(ip_cidr) = self.ip_addrs.first() {
-                    let IPCIDR::V4(ipv4_cidr) = ip_cidr;
-                    Some(ipv4_cidr.address)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-}
-impl From<NetworkInterface> for pcap::NetworkInterface {
-    fn from(ni: NetworkInterface) -> Self {
-        pcap::NetworkInterface::new(ni.index, ni.name)
-    }
-}
-
-impl From<&NetworkInterface> for pcap::NetworkInterface {
-    fn from(ni: &NetworkInterface) -> Self {
-        pcap::NetworkInterface::new(ni.index, ni.name.clone())
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LinkType {

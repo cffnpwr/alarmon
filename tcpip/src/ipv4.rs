@@ -5,7 +5,7 @@ mod type_of_service;
 
 use std::net::Ipv4Addr;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -108,6 +108,7 @@ impl IPv4Packet {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         type_of_service: TypeOfService,
+        total_length: u16,
         identification: u16,
         flags: Flags,
         fragment_offset: u16,
@@ -126,7 +127,6 @@ impl IPv4Packet {
             options_vec.extend(vec![0; padding_size]);
         }
         let ihl = (20 + options_vec.len()) / 4; // IPヘッダーの長さは20バイト（5 * 4） + オプションの長さ
-        let total_length = (ihl * 4 + payload.as_ref().len()) as u16; // ヘッダー長 + ペイロード長
 
         let mut packet = Self {
             internet_header_length: ihl as u8,
@@ -216,55 +216,47 @@ impl TryFromBytes for IPv4Packet {
     }
 }
 
-impl From<IPv4Packet> for Bytes {
-    fn from(packet: IPv4Packet) -> Self {
-        let mut bytes = BytesMut::with_capacity(packet.total_length as usize);
+impl IPv4Packet {
+    fn into_bytes(self) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(self.total_length as usize);
 
-        bytes.extend_from_slice(&[IPv4Packet::VERSION << 4 | packet.internet_header_length]);
-        bytes.extend_from_slice(&[packet.type_of_service.into()]);
-        bytes.extend_from_slice(&packet.total_length.to_be_bytes());
-        bytes.extend_from_slice(&packet.identification.to_be_bytes());
+        vec.push(Self::VERSION << 4 | self.internet_header_length);
+        vec.push(self.type_of_service.into());
+        vec.extend_from_slice(&self.total_length.to_be_bytes());
+        vec.extend_from_slice(&self.identification.to_be_bytes());
 
-        let flags_byte: u8 = packet.flags.into();
+        let flags_byte: u8 = self.flags.into();
         let flags_and_offset =
-            (flags_byte as u16) << 8 | (packet.fragment_offset & FRAGMENT_OFFSET_MASK);
-        bytes.extend_from_slice(&flags_and_offset.to_be_bytes());
-        bytes.extend_from_slice(&[packet.time_to_live]);
-        bytes.extend_from_slice(&[packet.protocol.into()]);
-        bytes.extend_from_slice(&packet.header_checksum.to_be_bytes());
-        bytes.extend_from_slice(&packet.src.octets());
-        bytes.extend_from_slice(&packet.dst.octets());
-        bytes.extend_from_slice(&packet.options);
-        bytes.extend_from_slice(&packet.payload);
-        bytes.freeze()
+            (flags_byte as u16) << 8 | (self.fragment_offset & FRAGMENT_OFFSET_MASK);
+        vec.extend_from_slice(&flags_and_offset.to_be_bytes());
+        vec.push(self.time_to_live);
+        vec.push(self.protocol.into());
+        vec.extend_from_slice(&self.header_checksum.to_be_bytes());
+        vec.extend_from_slice(&self.src.octets());
+        vec.extend_from_slice(&self.dst.octets());
+        vec.extend_from_slice(&self.options);
+        vec.extend_from_slice(&self.payload);
+        vec
     }
 }
-
-impl From<&IPv4Packet> for Bytes {
-    fn from(packet: &IPv4Packet) -> Self {
-        packet.clone().into()
-    }
-}
-
 impl From<IPv4Packet> for Vec<u8> {
     fn from(packet: IPv4Packet) -> Self {
-        Bytes::from(packet).to_vec()
+        packet.into_bytes()
     }
 }
-
 impl From<&IPv4Packet> for Vec<u8> {
     fn from(packet: &IPv4Packet) -> Self {
-        Bytes::from(packet).to_vec()
+        packet.clone().into_bytes()
     }
 }
 impl From<IPv4Packet> for Box<[u8]> {
     fn from(packet: IPv4Packet) -> Self {
-        Bytes::from(packet).to_vec().into_boxed_slice()
+        packet.into_bytes().into_boxed_slice()
     }
 }
 impl From<&IPv4Packet> for Box<[u8]> {
     fn from(packet: &IPv4Packet) -> Self {
-        Bytes::from(packet).to_vec().into_boxed_slice()
+        packet.clone().into_bytes().into_boxed_slice()
     }
 }
 
@@ -293,6 +285,7 @@ mod tests {
     fn test_ipv4_packet_creation() {
         let packet = IPv4Packet::new(
             TypeOfService::default(),
+            60,
             1,
             Flags::default(),
             0,
@@ -304,12 +297,13 @@ mod tests {
             vec![0; 40],
         );
         assert_eq!(packet.internet_header_length, 5);
-        assert_eq!(packet.total_length, 60); // 20バイト（ヘッダー） + 40バイト（ペイロード）
+        assert_eq!(packet.total_length, 60);
         assert!(packet.validate_checksum());
 
         // オプションフィールドが４の倍数のサイズでない場合、パディングを追加
         let packet = IPv4Packet::new(
             TypeOfService::default(),
+            60,
             1,
             Flags::default(),
             0,
@@ -321,13 +315,13 @@ mod tests {
             vec![0; 40],
         );
         assert_eq!(packet.options.len(), 4); // パディングにより4バイトに調整される
-        assert_eq!(packet.total_length, 64); // 24バイト（ヘッダー + パディング済みオプション） + 40バイト（ペイロード）
     }
 
     #[test]
     fn test_ipv4_packet_into_bytes() {
         let packet = IPv4Packet::new(
             TypeOfService::default(),
+            60,
             1,
             Flags::default(),
             0,
@@ -338,7 +332,7 @@ mod tests {
             vec![0; 0],
             vec![0; 40],
         );
-        let bytes: Vec<u8> = packet.into();
+        let bytes = packet.into_bytes();
         assert_eq!(bytes.as_slice(), &DEFAULT_IPV4_PACKET_BYTES);
     }
 

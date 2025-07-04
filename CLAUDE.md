@@ -145,7 +145,6 @@ gh api -X PATCH repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority -
 - Create PRs only after completing the implementation
 - PR titles should clearly describe the changes
 - Link the corresponding Issue in the PR description
-- **ALWAYS write PR descriptions in 常態 (declarative/constant tense) in Japanese**
 - Ensure all CI/CD checks pass before requesting review
 
 ### GitHub Actions CI/CD

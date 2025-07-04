@@ -1,6 +1,5 @@
 use std::fmt::{self, Display};
 
-use bytes::{Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -184,14 +183,20 @@ impl TryFromBytes for TimeExceededMessage {
     }
 }
 
-impl From<TimeExceededMessage> for Bytes {
+impl From<TimeExceededMessage> for Vec<u8> {
     fn from(value: TimeExceededMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
+        (&value).into()
+    }
+}
+
+impl From<&TimeExceededMessage> for Vec<u8> {
+    fn from(value: &TimeExceededMessage) -> Self {
+        let mut bytes = Vec::with_capacity(8 + value.original_datagram.total_size());
 
         // Type (1 byte)
-        bytes.extend_from_slice(&[MessageType::TimeExceeded.into()]);
+        bytes.push(MessageType::TimeExceeded.into());
         // Code (1 byte)
-        bytes.extend_from_slice(&[value.code.into()]);
+        bytes.push(value.code.into());
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Unused field (4 bytes)
@@ -199,25 +204,7 @@ impl From<TimeExceededMessage> for Bytes {
         // Original datagram (variable length)
         bytes.extend_from_slice(&Vec::from(&value.original_datagram));
 
-        bytes.freeze()
-    }
-}
-
-impl From<&TimeExceededMessage> for Bytes {
-    fn from(value: &TimeExceededMessage) -> Self {
-        value.clone().into()
-    }
-}
-
-impl From<TimeExceededMessage> for Vec<u8> {
-    fn from(value: TimeExceededMessage) -> Self {
-        Bytes::from(value).to_vec()
-    }
-}
-
-impl From<&TimeExceededMessage> for Vec<u8> {
-    fn from(value: &TimeExceededMessage) -> Self {
-        Bytes::from(value).to_vec()
+        bytes
     }
 }
 
@@ -232,6 +219,7 @@ mod tests {
     fn create_test_ipv4_packet(payload: &[u8]) -> IPv4Packet {
         IPv4Packet::new(
             TypeOfService::default(),
+            20 + payload.len() as u16,
             1,
             Flags::default(),
             0,

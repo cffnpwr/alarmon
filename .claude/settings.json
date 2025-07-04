@@ -4,9 +4,10 @@
       "Bash(cargo --version)",
       "Bash(cargo --list)",
       "Bash(cargo check:*)",
-      "Bash(cargo build:*)",
-      "Bash(cargo fmt:*)",
-      "Bash(cargo clippy:*)",
+      "Bash(cargo build --help)",
+      "Bash(cargo test --help)",
+      "Bash(cargo fmt --help)",
+      "Bash(cargo clippy --help)",
       "Bash(cargo test:*)",
       "Bash(cargo llvm-cov:*)",
       "Bash(rustc --version)",
@@ -26,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_response.filePath | select(endswith(\".rs\"))' | xargs -r -- cargo fmt -- "
+            "command": "jq -r '.tool_input.file_path | select(endswith(\\\".rs\\\")' | xargs -r -- cargo fmt --"
           }
         ]
       }

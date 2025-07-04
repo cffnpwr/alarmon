@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -117,14 +117,20 @@ impl Message for EchoMessage {
     }
 }
 
-impl From<EchoMessage> for Bytes {
+impl From<EchoMessage> for Vec<u8> {
     fn from(value: EchoMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.data.len());
+        (&value).into()
+    }
+}
+
+impl From<&EchoMessage> for Vec<u8> {
+    fn from(value: &EchoMessage) -> Self {
+        let mut bytes = Vec::with_capacity(8 + value.data.len());
 
         // Type (1 byte)
-        bytes.extend_from_slice(&[value.msg_type()]);
+        bytes.push(value.msg_type());
         // Code (1 byte)
-        bytes.extend_from_slice(&[value.code()]);
+        bytes.push(value.code());
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Identifier (2 bytes)
@@ -134,25 +140,7 @@ impl From<EchoMessage> for Bytes {
         // Data (variable length)
         bytes.extend_from_slice(&value.data);
 
-        bytes.freeze()
-    }
-}
-
-impl From<&EchoMessage> for Bytes {
-    fn from(value: &EchoMessage) -> Self {
-        value.clone().into()
-    }
-}
-
-impl From<EchoMessage> for Vec<u8> {
-    fn from(value: EchoMessage) -> Self {
-        Bytes::from(value).to_vec()
-    }
-}
-
-impl From<&EchoMessage> for Vec<u8> {
-    fn from(value: &EchoMessage) -> Self {
-        Bytes::from(value).to_vec()
+        bytes
     }
 }
 
