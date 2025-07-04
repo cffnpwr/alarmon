@@ -233,6 +233,7 @@ mod tests {
     #[tokio::test]
     async fn test_worker_pool_run() {
         use std::time::Duration;
+
         use tokio::time::timeout;
 
         // [正常系] WorkerPool実行のテスト

@@ -496,6 +496,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_worker_run() {
         use std::time::Duration;
+
         use tokio::time::timeout;
 
         // [正常系] PingWorkerの実行とキャンセレーション
@@ -521,6 +522,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_request_sender_run_send_echo_req() {
         use std::time::Duration;
+
         use tokio::time::timeout;
 
         // [正常系] Echo Request送信ループのテスト
@@ -544,7 +546,7 @@ mod tests {
 
         // 短時間で複数回送信されることを確認
         let send_handle = tokio::spawn(sender.run_send_echo_req());
-        
+
         // 最初のパケットを受信
         let first_packet = timeout(Duration::from_millis(100), rx.recv()).await;
         assert!(first_packet.is_ok());
@@ -565,6 +567,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_response_receiver_listen_recv_ip_packets() {
         use std::time::Duration;
+
         use tokio::time::timeout;
 
         // [正常系] select!ループでの受信処理テスト
@@ -609,7 +612,11 @@ mod tests {
         drop(tx);
         drop(ping_tx);
 
-        let result = timeout(Duration::from_millis(100), receiver.listen_recv_ip_packets()).await;
+        let result = timeout(
+            Duration::from_millis(100),
+            receiver.listen_recv_ip_packets(),
+        )
+        .await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_ok());
     }

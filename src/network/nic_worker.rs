@@ -275,19 +275,19 @@ impl EthernetFrameReceiver {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
-    use std::sync::Arc;
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use mockall::mock;
-    use pcap::{DataLinkReceiver, DataLinkSender, PcapError};
+    use tcpip::ethernet::MacAddr;
+    use tcpip::icmp::ICMPMessage;
+    use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
     use tcpip::ipv4::{Flags, TypeOfService};
-    use tokio::sync::mpsc;
+    use tokio::time::timeout;
     use tokio_test::assert_ok;
 
     use super::*;
     use crate::config::ArpConfig;
-    use crate::net_utils::arp_table::ArpTable;
 
     // テスト用のモック構造体
     mock! {
@@ -295,7 +295,7 @@ mod tests {
 
         #[async_trait]
         impl DataLinkSender for Sender {
-            async fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError>;
+            async fn send_bytes(&mut self, buf: &[u8]) -> Result<(), pcap::PcapError>;
         }
     }
 
@@ -304,14 +304,11 @@ mod tests {
 
         #[async_trait]
         impl DataLinkReceiver for Receiver {
-            async fn recv(&mut self) -> Result<Vec<u8>, PcapError>;
+            async fn recv(&mut self) -> Result<Vec<u8>, pcap::PcapError>;
         }
     }
 
     fn create_test_network_interface() -> NetworkInterface {
-        use tcpip::ethernet::MacAddr;
-        use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
-
         let mac_addr = MacAddr::try_from("00:11:22:33:44:55").unwrap();
         let ipv4_cidr =
             IPv4CIDR::new_with_prefix_length(Ipv4Addr::new(192, 168, 1, 100), &24).unwrap();
@@ -383,12 +380,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ethernet_frame_receiver_handle_recv_ethernet_frame() {
-        use bytes::Bytes;
-        use fxhash::FxHashMap;
-        use tcpip::ethernet::{EtherType, EthernetFrame, MacAddr};
-        use tcpip::icmp::ICMPMessage;
-        use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
-
         // [正常系] IPv4 ICMPパケットの処理
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
@@ -524,10 +515,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_nic_worker_run() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] NicWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
         let ni = create_test_network_interface();
@@ -605,15 +592,13 @@ mod tests {
         tx.send(ipv4_packet).await.unwrap();
         drop(tx); // チャネルを閉じる
 
-        let mut sender = sender;
+        let sender = sender;
         let result = sender.listen_ip_packets().await;
         assert_ok!(result);
     }
 
     #[tokio::test]
     async fn test_ethernet_frame_sender_handle_recv_ip_packet() {
-        use bytes::Bytes;
-
         // [正常系] IPパケットの処理とEthernetフレーム送信
         let ni = create_test_network_interface();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
@@ -656,10 +641,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ethernet_frame_receiver_listen_ethernet_frames() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] Ethernetフレーム受信処理のテスト
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
@@ -673,7 +654,7 @@ mod tests {
             .times(1)
             .returning(|| Ok(vec![0; 14])); // 最小Ethernetフレームサイズ
 
-        let mut receiver = EthernetFrameReceiver {
+        let receiver = EthernetFrameReceiver {
             ni,
             datalink_rx: Box::new(mock_receiver),
             ip_txs,
