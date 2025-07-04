@@ -90,15 +90,14 @@ impl DataLinkReceiver for LibpcapDataLinkReceiver {
 pub struct NetworkInterface {
     index: u32,
     name: String,
-    description: String,
 }
 impl NetworkInterface {
-    pub fn name(&self) -> String {
-        self.name.clone()
+    pub fn new(index: u32, name: String) -> Self {
+        Self { index, name }
     }
 
-    pub fn description(&self) -> String {
-        self.description.clone()
+    pub fn name(&self) -> String {
+        self.name.clone()
     }
 
     pub fn index(&self) -> u32 {
@@ -116,7 +115,6 @@ impl NetworkInterface {
 
                 Ok(NetworkInterface {
                     name: device.name.clone(),
-                    description: device.desc.clone().unwrap_or_default(),
                     index,
                 })
             })
