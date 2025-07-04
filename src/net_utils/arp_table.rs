@@ -68,6 +68,16 @@ impl ArpTable {
             arp_timeout: arp_config.timeout,
         }
     }
+
+    /// テスト用ヘルパー関数: ARPテーブルに直接エントリを追加する
+    /// 
+    /// この関数はテスト専用で、実際のARP解決をバイパスして
+    /// 指定されたIPアドレスとMACアドレスのマッピングを直接ARPテーブルに追加します。
+    #[cfg(test)]
+    pub fn insert_for_test(&self, ip: Ipv4Addr, mac: MacAddr) {
+        let mut entries = self.entries.write();
+        entries.insert(ip, ArpEntry::new(mac, self.default_ttl));
+    }
     pub async fn get_or_resolve(&self, target_ip: Ipv4Addr) -> Result<MacAddr, ArpTableError> {
         // まず読み取りロックでキャッシュを確認
         {

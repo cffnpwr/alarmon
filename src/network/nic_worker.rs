@@ -605,6 +605,13 @@ mod tests {
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
         let (_tx, rx) = mpsc::channel(100);
 
+        // 宛先IPアドレスとMACアドレスを事前にARPテーブルに追加
+        let target_ip = Ipv4Addr::new(192, 168, 1, 1);
+        let target_mac = MacAddr::try_from("aa:bb:cc:dd:ee:ff").unwrap();
+
+        // ARPテーブルにエントリを直接追加（テスト用）
+        arp_table.insert_for_test(target_ip, target_mac);
+
         let mut mock_sender = MockSender::new();
         mock_sender
             .expect_send_bytes()
@@ -626,18 +633,14 @@ mod tests {
             64,
             Protocol::ICMP,
             Ipv4Addr::new(192, 168, 1, 100),
-            Ipv4Addr::new(192, 168, 1, 1),
+            target_ip,
             Vec::new(),
             Bytes::from(vec![0; 32]),
         );
 
-        // 注意: ARPテーブルにエントリを直接追加する手段がないため、
-        // このテストではARP解決が実際に試行されることになる
-        // 実際の環境ではARP解決が失敗する可能性がある
         let mut sender = sender;
         let result = sender.handle_recv_ip_packet(ipv4_packet).await;
-        // エラーが発生することを許容（環境依存のため）
-        let _ = result;
+        assert_ok!(result);
     }
 
     #[tokio::test]
