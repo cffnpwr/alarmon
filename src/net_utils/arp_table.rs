@@ -1,5 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::Duration;
@@ -25,8 +24,6 @@ pub enum ArpTableError {
     PcapError(#[from] PcapError),
     #[error(transparent)]
     MacAddressError(#[from] MacAddrError),
-    #[error("Network interface '{0}' not found")]
-    InterfaceNotFound(String),
     #[error("No IPv4 address found on interface {0}")]
     NoIpv4Address(String),
     #[error("ARP response timeout")]
@@ -56,9 +53,9 @@ impl ArpEntry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ArpTable {
-    entries: Arc<RwLock<FxHashMap<Ipv4Addr, ArpEntry>>>,
+    entries: RwLock<FxHashMap<Ipv4Addr, ArpEntry>>,
     default_ttl: Duration,
     arp_timeout: Duration,
 }
@@ -66,7 +63,7 @@ pub struct ArpTable {
 impl ArpTable {
     pub fn new(arp_config: &ArpConfig) -> Self {
         Self {
-            entries: Arc::new(RwLock::new(FxHashMap::default())),
+            entries: RwLock::new(FxHashMap::default()),
             default_ttl: arp_config.ttl,
             arp_timeout: arp_config.timeout,
         }
@@ -85,8 +82,7 @@ impl ArpTable {
         // キャッシュにない、または期限切れの場合はARP解決を実行
         let netlink = Netlink::new()?;
         let best_route = netlink.get_route(target_ip)?;
-        let ni = pcap::NetworkInterface::find_by_name(&best_route.interface.name)
-            .ok_or_else(|| ArpTableError::InterfaceNotFound(best_route.interface.name.clone()))?;
+        let ni = pcap::NetworkInterface::from(&best_route.interface);
 
         let mac_addr = resolve_arp_with_pcap(target_ip, ni, best_route, self.arp_timeout).await?;
         // 書き込みロックで結果をキャッシュに保存
@@ -205,8 +201,6 @@ fn get_source_ip(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
     use std::time::Instant;
 
     use async_trait::async_trait;
@@ -218,59 +212,56 @@ mod tests {
 
     // テスト用のモック構造体
     struct MockPcap {
-        packets_to_receive: Arc<Mutex<VecDeque<Vec<u8>>>>,
-        sent_packets: Arc<Mutex<Vec<Vec<u8>>>>,
+        packets_to_receive: Vec<u8>,
     }
 
     impl MockPcap {
         fn new() -> Self {
             Self {
-                packets_to_receive: Arc::new(Mutex::new(VecDeque::new())),
-                sent_packets: Arc::new(Mutex::new(Vec::new())),
+                packets_to_receive: Vec::new(),
             }
         }
 
-        fn add_packet_to_receive(&self, packet: Vec<u8>) {
-            self.packets_to_receive.lock().unwrap().push_back(packet);
+        fn add_packet_to_receive(&mut self, packet: Vec<u8>) {
+            self.packets_to_receive = packet;
         }
     }
 
     impl Pcap for MockPcap {
         fn open(&self, _promisc: bool) -> Result<Channel, PcapError> {
-            let sender = MockSender {
-                sent_packets: Arc::clone(&self.sent_packets),
-            };
+            let sender = MockSender {};
             let receiver = MockReceiver {
-                packets: Arc::clone(&self.packets_to_receive),
+                packet: self.packets_to_receive.clone(),
+                returned: false,
             };
             Ok(Channel::Ethernet(Box::new(sender), Box::new(receiver)))
         }
     }
 
-    struct MockSender {
-        sent_packets: Arc<Mutex<Vec<Vec<u8>>>>,
-    }
+    struct MockSender {}
 
     #[async_trait]
     impl DataLinkSender for MockSender {
-        async fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError> {
-            self.sent_packets.lock().unwrap().push(buf.to_vec());
+        async fn send_bytes(&mut self, _buf: &[u8]) -> Result<(), PcapError> {
             Ok(())
         }
     }
 
     struct MockReceiver {
-        packets: Arc<Mutex<VecDeque<Vec<u8>>>>,
+        packet: Vec<u8>,
+        returned: bool,
     }
 
     #[async_trait]
     impl DataLinkReceiver for MockReceiver {
         async fn recv(&mut self) -> Result<Vec<u8>, PcapError> {
+            if !self.returned && !self.packet.is_empty() {
+                self.returned = true;
+                return Ok(self.packet.clone());
+            }
+            // パケットがない場合は一度だけエラーを返す
             loop {
-                if let Some(packet) = self.packets.lock().unwrap().pop_front() {
-                    return Ok(packet);
-                }
-                tokio::time::sleep(StdDuration::from_millis(10)).await;
+                tokio::time::sleep(StdDuration::from_millis(100)).await;
             }
         }
     }
@@ -460,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_arp_with_pcap() {
         // [正常系] ARP応答受信成功
-        let mock_pcap = MockPcap::new();
+        let mut mock_pcap = MockPcap::new();
         let target_ip = Ipv4Addr::new(192, 168, 1, 1);
         let gateway_ip = Ipv4Addr::new(192, 168, 1, 254);
 
