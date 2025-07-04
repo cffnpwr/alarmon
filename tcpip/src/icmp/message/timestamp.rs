@@ -1,3 +1,4 @@
+use bytes::{Bytes, BytesMut};
 use chrono::NaiveTime;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
@@ -173,20 +174,14 @@ impl TryFromBytes for TimestampMessage {
     }
 }
 
-impl From<TimestampMessage> for Vec<u8> {
+impl From<TimestampMessage> for Bytes {
     fn from(value: TimestampMessage) -> Self {
-        (&value).into()
-    }
-}
-
-impl From<&TimestampMessage> for Vec<u8> {
-    fn from(value: &TimestampMessage) -> Self {
-        let mut bytes = Vec::with_capacity(20);
+        let mut bytes = BytesMut::with_capacity(20);
 
         // Type (1 byte)
-        bytes.push(value.msg_type());
+        bytes.extend_from_slice(&[value.msg_type()]);
         // Code (1 byte)
-        bytes.push(value.code());
+        bytes.extend_from_slice(&[value.code()]);
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Identifier (2 bytes)
@@ -200,7 +195,25 @@ impl From<&TimestampMessage> for Vec<u8> {
         // Transmit Timestamp (4 bytes)
         bytes.extend_from_slice(&u32_from_naive_time(value.transmit_timestamp).to_be_bytes());
 
-        bytes
+        bytes.freeze()
+    }
+}
+
+impl From<&TimestampMessage> for Bytes {
+    fn from(value: &TimestampMessage) -> Self {
+        value.clone().into()
+    }
+}
+
+impl From<TimestampMessage> for Vec<u8> {
+    fn from(value: TimestampMessage) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&TimestampMessage> for Vec<u8> {
+    fn from(value: &TimestampMessage) -> Self {
+        Bytes::from(value).to_vec()
     }
 }
 

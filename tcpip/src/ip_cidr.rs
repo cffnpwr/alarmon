@@ -129,6 +129,13 @@ impl IPv4CIDR {
             netmask,
         })
     }
+
+    pub fn contains(&self, ip: &Ipv4Addr) -> bool {
+        let network_mask = self.netmask.into_address();
+        let network_addr = Ipv4Addr::from(u32::from(self.address) & u32::from(network_mask));
+        let target_network_addr = Ipv4Addr::from(u32::from(*ip) & u32::from(network_mask));
+        network_addr == target_network_addr
+    }
 }
 impl Default for IPv4CIDR {
     fn default() -> Self {
@@ -212,5 +219,19 @@ mod tests {
         // [正常系] 表示形式
         let cidr = IPv4CIDR::new(Ipv4Addr::new(192, 168, 1, 0), IPv4Netmask(24));
         assert_eq!(format!("{}", cidr), "192.168.1.0/24");
+    }
+
+    // IPv4CIDR::containsのテスト
+    #[test]
+    fn test_ipv4_cidr_contains() {
+        // [正常系] 同じネットワーク内のIPアドレス
+        let cidr = IPv4CIDR::new(Ipv4Addr::new(192, 168, 1, 0), IPv4Netmask(24));
+        assert!(cidr.contains(&Ipv4Addr::new(192, 168, 1, 100)));
+        assert!(cidr.contains(&Ipv4Addr::new(192, 168, 1, 1)));
+        assert!(cidr.contains(&Ipv4Addr::new(192, 168, 1, 255)));
+
+        // [異常系] 異なるネットワークのIPアドレス
+        assert!(!cidr.contains(&Ipv4Addr::new(192, 168, 2, 100)));
+        assert!(!cidr.contains(&Ipv4Addr::new(10, 0, 0, 1)));
     }
 }

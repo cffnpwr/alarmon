@@ -5,6 +5,7 @@ mod protocol_type;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 
+use bytes::{Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -189,23 +190,18 @@ impl TryFrom<&[u8]> for ARPPacketInner<MacAddr, Ipv4Addr> {
         ARPPacketInner::<MacAddr, Ipv4Addr>::try_from_bytes(value)
     }
 }
-impl From<ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
+impl From<ARPPacketInner<MacAddr, Ipv4Addr>> for Bytes {
     fn from(value: ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
-        (&value).into()
-    }
-}
-impl From<&ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
-    fn from(value: &ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
-        let mut bytes = Vec::with_capacity(28);
+        let mut bytes = BytesMut::with_capacity(28);
 
         // Hardware Type (Ethernet = 1)
         bytes.extend_from_slice(&(ARPPacketInner::<MacAddr, Ipv4Addr>::HTYPE as u16).to_be_bytes());
         // Protocol Type (IPv4 = 0x0800)
         bytes.extend_from_slice(&(ARPPacketInner::<MacAddr, Ipv4Addr>::PTYPE as u16).to_be_bytes());
         // Hardware Address Length (6 bytes for MAC)
-        bytes.push(ARPPacketInner::<MacAddr, Ipv4Addr>::HLEN);
+        bytes.extend_from_slice(&[ARPPacketInner::<MacAddr, Ipv4Addr>::HLEN]);
         // Protocol Address Length (4 bytes for IPv4)
-        bytes.push(ARPPacketInner::<MacAddr, Ipv4Addr>::PLEN);
+        bytes.extend_from_slice(&[ARPPacketInner::<MacAddr, Ipv4Addr>::PLEN]);
         // Operation
         bytes.extend_from_slice(&(value.operation as u16).to_be_bytes());
 
@@ -223,7 +219,53 @@ impl From<&ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
         // Target Protocol Address (IPv4)
         bytes.extend_from_slice(&value.tpa.octets());
 
-        bytes
+        bytes.freeze()
+    }
+}
+
+impl From<&ARPPacketInner<MacAddr, Ipv4Addr>> for Bytes {
+    fn from(value: &ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
+        value.clone().into()
+    }
+}
+
+impl From<ARPPacket> for Bytes {
+    fn from(value: ARPPacket) -> Self {
+        match value {
+            ARPPacket::EthernetIPv4(inner) => inner.into(),
+        }
+    }
+}
+
+impl From<&ARPPacket> for Bytes {
+    fn from(value: &ARPPacket) -> Self {
+        match value {
+            ARPPacket::EthernetIPv4(inner) => inner.into(),
+        }
+    }
+}
+
+impl From<ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
+    fn from(value: ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&ARPPacketInner<MacAddr, Ipv4Addr>> for Vec<u8> {
+    fn from(value: &ARPPacketInner<MacAddr, Ipv4Addr>) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<ARPPacket> for Vec<u8> {
+    fn from(value: ARPPacket) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&ARPPacket> for Vec<u8> {
+    fn from(value: &ARPPacket) -> Self {
+        Bytes::from(value).to_vec()
     }
 }
 

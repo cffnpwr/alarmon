@@ -3,6 +3,7 @@ mod message_type;
 
 use std::net::Ipv4Addr;
 
+use bytes::Bytes;
 use chrono::NaiveTime;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
@@ -165,6 +166,20 @@ impl ICMPMessage {
             ICMPMessage::TimestampReply(timestamp) => timestamp.validate_checksum(),
         }
     }
+
+    /// メッセージの種類
+    pub fn message_type(&self) -> MessageType {
+        match self {
+            ICMPMessage::Echo(_) => MessageType::Echo,
+            ICMPMessage::EchoReply(_) => MessageType::EchoReply,
+            ICMPMessage::DestinationUnreachable(_) => MessageType::DestinationUnreachable,
+            ICMPMessage::Redirect(_) => MessageType::Redirect,
+            ICMPMessage::TimeExceeded(_) => MessageType::TimeExceeded,
+            ICMPMessage::ParameterProblem(_) => MessageType::ParameterProblem,
+            ICMPMessage::Timestamp(_) => MessageType::Timestamp,
+            ICMPMessage::TimestampReply(_) => MessageType::TimestampReply,
+        }
+    }
 }
 
 impl TryFromBytes for ICMPMessage {
@@ -204,15 +219,9 @@ impl TryFromBytes for ICMPMessage {
     }
 }
 
-impl From<ICMPMessage> for Vec<u8> {
+impl From<ICMPMessage> for Bytes {
     fn from(value: ICMPMessage) -> Self {
-        (&value).into()
-    }
-}
-
-impl From<&ICMPMessage> for Vec<u8> {
-    fn from(value: &ICMPMessage) -> Self {
-        match value {
+        let vec: Vec<u8> = match value {
             ICMPMessage::Echo(echo) => echo.into(),
             ICMPMessage::EchoReply(echo) => echo.into(),
             ICMPMessage::DestinationUnreachable(dest) => dest.into(),
@@ -221,7 +230,36 @@ impl From<&ICMPMessage> for Vec<u8> {
             ICMPMessage::ParameterProblem(param) => param.into(),
             ICMPMessage::Timestamp(timestamp) => timestamp.into(),
             ICMPMessage::TimestampReply(timestamp) => timestamp.into(),
-        }
+        };
+        Bytes::from(vec)
+    }
+}
+
+impl From<&ICMPMessage> for Bytes {
+    fn from(value: &ICMPMessage) -> Self {
+        let vec: Vec<u8> = match value {
+            ICMPMessage::Echo(echo) => echo.into(),
+            ICMPMessage::EchoReply(echo) => echo.into(),
+            ICMPMessage::DestinationUnreachable(dest) => dest.into(),
+            ICMPMessage::Redirect(redirect) => redirect.into(),
+            ICMPMessage::TimeExceeded(time) => time.into(),
+            ICMPMessage::ParameterProblem(param) => param.into(),
+            ICMPMessage::Timestamp(timestamp) => timestamp.into(),
+            ICMPMessage::TimestampReply(timestamp) => timestamp.into(),
+        };
+        Bytes::from(vec)
+    }
+}
+
+impl From<ICMPMessage> for Vec<u8> {
+    fn from(value: ICMPMessage) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&ICMPMessage> for Vec<u8> {
+    fn from(value: &ICMPMessage) -> Self {
+        Bytes::from(value).to_vec()
     }
 }
 
@@ -280,7 +318,6 @@ mod tests {
 
         let original_packet = IPv4Packet::new(
             TypeOfService::default(),
-            28,
             1,
             Flags::default(),
             0,
@@ -315,7 +352,6 @@ mod tests {
         let gateway = std::net::Ipv4Addr::new(192, 168, 1, 1);
         let original_packet = IPv4Packet::new(
             TypeOfService::default(),
-            28,
             1,
             Flags::default(),
             0,
@@ -344,7 +380,6 @@ mod tests {
         // [正常系] Time Exceededメッセージの生成
         let original_packet = IPv4Packet::new(
             TypeOfService::default(),
-            28,
             1,
             Flags::default(),
             0,
@@ -373,7 +408,6 @@ mod tests {
         // [正常系] Parameter Problemメッセージの生成
         let original_packet = IPv4Packet::new(
             TypeOfService::default(),
-            28,
             1,
             Flags::default(),
             0,

@@ -10,7 +10,7 @@ pub trait Pcap {
 }
 
 #[async_trait]
-pub trait DataLinkSender {
+pub trait DataLinkSender: Send {
     async fn send_bytes(&mut self, buf: &[u8]) -> Result<(), PcapError>;
 }
 #[async_trait]
@@ -21,7 +21,7 @@ pub trait DataLinkSenderExt: DataLinkSender {
 }
 impl<T: DataLinkSender> DataLinkSenderExt for T {}
 #[async_trait]
-pub trait DataLinkReceiver {
+pub trait DataLinkReceiver: Send {
     async fn recv(&mut self) -> Result<Vec<u8>, PcapError>;
 }
 
