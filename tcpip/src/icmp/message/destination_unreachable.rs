@@ -1,5 +1,6 @@
 use std::fmt::{self, Display};
 
+use bytes::{Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -288,20 +289,14 @@ impl Message for DestinationUnreachableMessage {
     }
 }
 
-impl From<DestinationUnreachableMessage> for Vec<u8> {
+impl From<DestinationUnreachableMessage> for Bytes {
     fn from(value: DestinationUnreachableMessage) -> Self {
-        (&value).into()
-    }
-}
-
-impl From<&DestinationUnreachableMessage> for Vec<u8> {
-    fn from(value: &DestinationUnreachableMessage) -> Self {
-        let mut bytes = Vec::with_capacity(8 + value.original_datagram.total_size());
+        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
 
         // Type (1 byte)
-        bytes.push(MessageType::DestinationUnreachable.into());
+        bytes.extend_from_slice(&[MessageType::DestinationUnreachable.into()]);
         // Code (1 byte)
-        bytes.push(value.code.into());
+        bytes.extend_from_slice(&[value.code.into()]);
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Unused field (4 bytes)
@@ -309,7 +304,25 @@ impl From<&DestinationUnreachableMessage> for Vec<u8> {
         // Original datagram (variable length)
         bytes.extend_from_slice(&Vec::from(&value.original_datagram));
 
-        bytes
+        bytes.freeze()
+    }
+}
+
+impl From<&DestinationUnreachableMessage> for Bytes {
+    fn from(value: &DestinationUnreachableMessage) -> Self {
+        value.clone().into()
+    }
+}
+
+impl From<DestinationUnreachableMessage> for Vec<u8> {
+    fn from(value: DestinationUnreachableMessage) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&DestinationUnreachableMessage> for Vec<u8> {
+    fn from(value: &DestinationUnreachableMessage) -> Self {
+        Bytes::from(value).to_vec()
     }
 }
 
@@ -324,7 +337,6 @@ mod tests {
     fn create_test_ipv4_packet(payload: &[u8]) -> IPv4Packet {
         IPv4Packet::new(
             TypeOfService::default(),
-            20 + payload.len() as u16,
             1,
             Flags::default(),
             0,

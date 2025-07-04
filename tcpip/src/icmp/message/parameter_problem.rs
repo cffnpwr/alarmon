@@ -1,3 +1,4 @@
+use bytes::{Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -121,30 +122,42 @@ impl TryFromBytes for ParameterProblemMessage {
     }
 }
 
-impl From<ParameterProblemMessage> for Vec<u8> {
+impl From<ParameterProblemMessage> for Bytes {
     fn from(value: ParameterProblemMessage) -> Self {
-        (&value).into()
-    }
-}
-
-impl From<&ParameterProblemMessage> for Vec<u8> {
-    fn from(value: &ParameterProblemMessage) -> Self {
-        let mut bytes = Vec::with_capacity(8 + value.original_datagram.total_size());
+        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
 
         // Type (1 byte)
-        bytes.push(MessageType::ParameterProblem.into());
+        bytes.extend_from_slice(&[MessageType::ParameterProblem.into()]);
         // Code (1 byte) - RFC 792: Parameter Problemのコードは常に0
-        bytes.push(0);
+        bytes.extend_from_slice(&[0]);
         // Checksum (2 bytes)
         bytes.extend_from_slice(&value.checksum.to_be_bytes());
         // Pointer (1 byte)
-        bytes.push(value.pointer);
+        bytes.extend_from_slice(&[value.pointer]);
         // Unused (3 bytes)
         bytes.extend_from_slice(&value.unused);
         // Original Datagram (variable length)
         bytes.extend_from_slice(&Vec::from(&value.original_datagram));
 
-        bytes
+        bytes.freeze()
+    }
+}
+
+impl From<&ParameterProblemMessage> for Bytes {
+    fn from(value: &ParameterProblemMessage) -> Self {
+        value.clone().into()
+    }
+}
+
+impl From<ParameterProblemMessage> for Vec<u8> {
+    fn from(value: ParameterProblemMessage) -> Self {
+        Bytes::from(value).to_vec()
+    }
+}
+
+impl From<&ParameterProblemMessage> for Vec<u8> {
+    fn from(value: &ParameterProblemMessage) -> Self {
+        Bytes::from(value).to_vec()
     }
 }
 
@@ -159,7 +172,6 @@ mod tests {
     fn create_test_ipv4_packet(payload: &[u8]) -> IPv4Packet {
         IPv4Packet::new(
             TypeOfService::default(),
-            20 + payload.len() as u16,
             1,
             Flags::default(),
             0,
