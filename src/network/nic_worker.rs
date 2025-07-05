@@ -10,7 +10,7 @@ use pcap::{
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError};
 use tcpip::ipv4::{IPv4Packet, Protocol};
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
@@ -21,10 +21,11 @@ use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
 pub struct NicWorkerResult {
     pub worker: NicWorker,
     pub sender: mpsc::Sender<IPv4Packet>,
-    pub receivers: FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>,
+    pub receivers: FxHashMap<Ipv4Addr, broadcast::Receiver<IPv4Packet>>,
 }
 
 #[derive(Debug, Error)]
+#[allow(clippy::enum_variant_names)]
 pub enum NicWorkerError {
     #[error(transparent)]
     NetworkError(#[from] NetlinkError),
@@ -34,10 +35,6 @@ pub enum NicWorkerError {
     PcapError(#[from] pcap::PcapError),
     #[error(transparent)]
     EthernetFrameError(#[from] EthernetFrameError),
-    #[error("Channel send error")]
-    ChannelSendError,
-    #[error("IP packet send channel not found for IP address {0}")]
-    IPPacketSendChannelNotFound(Ipv4Addr),
 }
 
 pub struct PingTargets {
@@ -53,7 +50,7 @@ pub struct EthernetFrameReceiver {
     datalink_rx: Box<dyn DataLinkReceiver>,
 
     /// 上位プロトコルWorkerにIPv4パケットを送信するためのチャネル群
-    ip_txs: FxHashMap<Ipv4Addr, mpsc::Sender<IPv4Packet>>,
+    ip_txs: FxHashMap<Ipv4Addr, broadcast::Sender<IPv4Packet>>,
 }
 
 impl std::fmt::Debug for EthernetFrameReceiver {
@@ -127,7 +124,7 @@ impl NicWorker {
         let (send_ip_txs, send_ip_rxs) = target_ips.as_ref().iter().fold(
             (FxHashMap::default(), FxHashMap::default()),
             |(mut txs, mut rxs), &ip| {
-                let (tx, rx) = mpsc::channel(cfg.buffer_size);
+                let (tx, rx) = broadcast::channel(cfg.buffer_size);
                 txs.insert(ip, tx);
                 rxs.insert(ip, rx);
                 (txs, rxs)
@@ -215,7 +212,7 @@ impl EthernetFrameReceiver {
     async fn listen_ethernet_frames(mut self) -> Result<(), NicWorkerError> {
         while let Ok(frame) = self.datalink_rx.recv().await {
             if let Err(e) = self.handle_recv_ethernet_frame(frame).await {
-                warn!("Failed to handle received Ethernet frame: {e}");
+                debug!("Failed to handle received Ethernet frame: {e}");
             }
         }
         Ok(())
@@ -262,13 +259,16 @@ impl EthernetFrameReceiver {
         }
 
         // 上位プロトコルWorkerにIPv4パケットを送信
-        let tx = self
-            .ip_txs
-            .get(&ipv4_packet.src)
-            .ok_or(NicWorkerError::IPPacketSendChannelNotFound(ipv4_packet.dst))?;
-        tx.send(ipv4_packet)
-            .await
-            .map_err(|_| NicWorkerError::ChannelSendError)?;
+        if let Some(tx) = self.ip_txs.get(&ipv4_packet.src) {
+            // 送信元IPアドレスに対応するWorkerが存在する場合（通常のEcho Reply）
+            let _ = tx.send(ipv4_packet.clone()); // broadcast::send は Result<usize, SendError<T>> を返すが、受信者がいない場合も正常とする
+        } else {
+            // 送信元IPアドレスに対応するWorkerが存在しない場合（tracerouteのTime Exceededなど）
+            // 全てのWorkerに送信
+            for tx in self.ip_txs.values() {
+                let _ = tx.send(ipv4_packet.clone());
+            }
+        }
 
         Ok(())
     }
@@ -344,7 +344,7 @@ mod tests {
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
         let target_ip = Ipv4Addr::new(192, 168, 1, 1);
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = broadcast::channel(100);
         ip_txs.insert(target_ip, tx);
 
         let mock_receiver = Box::new(MockReceiver::new());
@@ -385,7 +385,7 @@ mod tests {
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
         let target_ip = Ipv4Addr::new(192, 168, 1, 1);
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, mut rx) = broadcast::channel(100);
         ip_txs.insert(target_ip, tx);
 
         let mock_receiver = Box::new(MockReceiver::new());
@@ -507,11 +507,8 @@ mod tests {
         let result = receiver
             .handle_recv_ethernet_frame(unknown_frame_bytes)
             .await;
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            NicWorkerError::IPPacketSendChannelNotFound(_)
-        ));
+        // 修正後は未知のIPアドレスからのパケットも全receiverに送信されるためエラーにならない
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -534,7 +531,7 @@ mod tests {
         };
 
         let mut ip_txs = FxHashMap::default();
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = broadcast::channel(100);
         ip_txs.insert(targets[0], tx);
 
         let receiver = EthernetFrameReceiver {
@@ -649,7 +646,7 @@ mod tests {
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
         let target_ip = Ipv4Addr::new(192, 168, 1, 1);
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = broadcast::channel(100);
         ip_txs.insert(target_ip, tx);
 
         let mut mock_receiver = MockReceiver::new();
@@ -669,18 +666,5 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         handle.abort(); // タスクを中止
         let _ = handle.await; // 結果は無視（中止されるため）
-    }
-
-    #[test]
-    fn test_nic_worker_error() {
-        // [正常系] エラーの表示確認
-        let error1 = NicWorkerError::ChannelSendError;
-        assert_eq!(error1.to_string(), "Channel send error");
-
-        let error2 = NicWorkerError::IPPacketSendChannelNotFound(Ipv4Addr::new(192, 168, 1, 1));
-        assert_eq!(
-            error2.to_string(),
-            "IP packet send channel not found for IP address 192.168.1.1"
-        );
     }
 }

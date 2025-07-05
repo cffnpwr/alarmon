@@ -56,6 +56,36 @@ impl Default for ArpConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct TracerouteConfig {
+    /// traceroute機能の有効/無効
+    #[serde(default = "TracerouteConfig::default_enable")]
+    pub(crate) enable: bool,
+
+    /// 最大ホップ数
+    #[serde(default = "TracerouteConfig::default_max_hops")]
+    pub(crate) max_hops: u8,
+}
+
+impl TracerouteConfig {
+    const fn default_enable() -> bool {
+        true
+    }
+
+    const fn default_max_hops() -> u8 {
+        30
+    }
+}
+
+impl Default for TracerouteConfig {
+    fn default() -> Self {
+        Self {
+            enable: Self::default_enable(),
+            max_hops: Self::default_max_hops(),
+        }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct Config {
@@ -82,6 +112,10 @@ pub(crate) struct Config {
     /// ARP設定
     #[serde(default)]
     pub(crate) arp: ArpConfig,
+
+    /// Traceroute設定
+    #[serde(default)]
+    pub(crate) traceroute: TracerouteConfig,
 }
 
 impl Default for Config {
@@ -92,6 +126,7 @@ impl Default for Config {
             timeout: Self::default_timeout(),
             buffer_size: Self::default_buffer_size(),
             arp: ArpConfig::default(),
+            traceroute: TracerouteConfig::default(),
         }
     }
 }
@@ -168,6 +203,10 @@ timeout = 5
 ttl = 60
 timeout = 10
 
+[traceroute]
+enable = false
+max_hops = 15
+
 [[targets]]
 name = "Router"
 host = "192.168.1.1"
@@ -180,6 +219,8 @@ host = "192.168.1.1"
         let config = Config::load(temp_file.path()).unwrap();
         assert_eq!(config.arp.ttl, Duration::seconds(60)); // カスタム値
         assert_eq!(config.arp.timeout, Duration::seconds(10)); // カスタム値
+        assert!(!config.traceroute.enable); // カスタム値
+        assert_eq!(config.traceroute.max_hops, 15); // カスタム値
 
         // [異常系] 存在しないファイルを読み込む
         let non_existent_path = "/path/to/non/existent/file.toml";

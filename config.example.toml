@@ -10,6 +10,13 @@ interval = 1
 # タイムアウト（秒）
 timeout = 5
 
+# Traceroute設定 - オプション
+[traceroute]
+# traceroute機能の有効/無効 - デフォルトtrue
+enable = true
+# 最大ホップ数 - デフォルト30
+max_hops = 30
+
 # ARP設定 - オプション
 [arp]
 # ARPテーブルのTTL（秒） - デフォルト30秒
