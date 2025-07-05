@@ -8,7 +8,7 @@ use rand::Rng;
 use tcpip::icmp::{ICMPError, ICMPMessage};
 use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
@@ -62,7 +62,7 @@ pub struct PingResponseReceiver {
     pending_pings: FxHashMap<u16, PendingPing>,
 
     /// IPパケットを受信するためのチャネル
-    rx: mpsc::Receiver<IPv4Packet>,
+    rx: broadcast::Receiver<IPv4Packet>,
 
     /// 送信通知受信用チャネル
     ping_rx: mpsc::Receiver<PendingPing>,
@@ -81,7 +81,7 @@ impl PingWorker {
         target: Ipv4Addr,
         interval: Duration,
         tx: mpsc::Sender<IPv4Packet>,
-        rx: mpsc::Receiver<IPv4Packet>,
+        rx: broadcast::Receiver<IPv4Packet>,
     ) -> Self {
         let mut rng = rand::rng();
         let id = rng.random::<u16>();
@@ -193,7 +193,7 @@ impl PingResponseReceiver {
                     self.pending_pings.insert(pending_ping.sequence_number, pending_ping);
                 }
                 // IPパケットを受信
-                Some(pkt) = self.rx.recv() => {
+                Ok(pkt) = self.rx.recv() => {
                     if let Err(e) = self.handle_recv_ip_packet(pkt).await {
                         warn!("Failed to handle received IP packet: {e}");
                     }
@@ -278,7 +278,7 @@ mod tests {
         let target = Ipv4Addr::new(192, 168, 1, 1);
         let interval = Duration::seconds(1);
         let (tx, _rx1) = mpsc::channel(100);
-        let (_tx2, rx) = mpsc::channel(100);
+        let (_tx2, rx) = broadcast::channel(100);
 
         let ping_worker = PingWorker::new(token, src, target, interval, tx, rx);
 
@@ -325,7 +325,7 @@ mod tests {
         // [正常系] PingResponseReceiverの作成
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
-        let (_tx1, rx) = mpsc::channel(100);
+        let (_tx1, rx) = broadcast::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
 
         let receiver = PingResponseReceiver {
@@ -399,7 +399,7 @@ mod tests {
             },
         );
 
-        let (_tx, rx) = mpsc::channel(100);
+        let (_tx, rx) = broadcast::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
 
         let mut receiver = PingResponseReceiver {
@@ -505,7 +505,7 @@ mod tests {
         let target = Ipv4Addr::new(192, 168, 1, 1);
         let interval = chrono::Duration::seconds(1);
         let (tx, _rx1) = mpsc::channel(100);
-        let (_tx2, rx) = mpsc::channel(100);
+        let (_tx2, rx) = broadcast::channel(100);
 
         let ping_worker = PingWorker::new(token.clone(), src, target, interval, tx, rx);
 
@@ -573,7 +573,7 @@ mod tests {
         // [正常系] select!ループでの受信処理テスト
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = broadcast::channel(100);
         let (ping_tx, ping_rx) = mpsc::channel(100);
 
         let receiver = PingResponseReceiver {
@@ -606,7 +606,7 @@ mod tests {
             Vec::new(),
             icmp_bytes,
         );
-        tx.send(ipv4_packet).await.unwrap();
+        tx.send(ipv4_packet).unwrap();
 
         // チャネルを閉じてループを終了させる
         drop(tx);
@@ -626,7 +626,7 @@ mod tests {
         // [異常系] 不正なICMPメッセージの処理
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
-        let (_tx, rx) = mpsc::channel(100);
+        let (_tx, rx) = broadcast::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
 
         let mut receiver = PingResponseReceiver {

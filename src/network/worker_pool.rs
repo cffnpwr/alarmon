@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::nic_worker::NicWorkerError;
 use super::ping_worker::PingWorkerError;
+use super::traceroute_worker::{TracerouteWorker, TracerouteWorkerError};
 use crate::config::Config;
 use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::netlink::NetlinkError;
@@ -20,6 +21,8 @@ pub enum WorkerPoolError {
     NicWorkerError(#[from] NicWorkerError),
     #[error(transparent)]
     PingWorkerError(#[from] PingWorkerError),
+    #[error(transparent)]
+    TracerouteWorkerError(#[from] TracerouteWorkerError),
     #[error("No Ethernet interfaces found")]
     NoEthernetInterfaces,
 }
@@ -27,8 +30,20 @@ pub enum WorkerPoolError {
 pub struct WorkerPool {
     nic_workers: Vec<NicWorker>,
     ping_workers: Vec<PingWorker>,
+    traceroute_workers: Vec<TracerouteWorker>,
 }
 impl WorkerPool {
+    /// 指定されたターゲットIPに対する最適な送信元IPアドレスを取得
+    fn get_source_addr_for_target(
+        ping_targets: &PingTargets,
+        ping_target: &std::net::Ipv4Addr,
+    ) -> Result<std::net::Ipv4Addr, WorkerPoolError> {
+        ping_targets
+            .ni
+            .get_best_source_ip(ping_target)
+            .ok_or(WorkerPoolError::NoEthernetInterfaces)
+    }
+
     pub fn new(
         token: CancellationToken,
         arp_table: Arc<ArpTable>,
@@ -39,6 +54,8 @@ impl WorkerPool {
         let mut nic_workers = Vec::new();
         // Ping Workerの集合
         let mut ping_workers = Vec::new();
+        // Traceroute Workerの集合
+        let mut traceroute_workers = Vec::new();
 
         // 各インターフェースに対してNic Workerを起動
         for ping_targets in targets.values() {
@@ -51,29 +68,49 @@ impl WorkerPool {
             )?;
             nic_workers.push(nic_result.worker);
             let recv_ip_tx = nic_result.sender;
-            let mut send_ip_rxs = nic_result.receivers;
+            let send_ip_broadcast_rxs = nic_result.receivers;
 
-            // 各宛先IPアドレスに対してPing Workerを起動
+            // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
             for ping_target in &ping_targets.targets {
-                let src_addr = ping_targets
-                    .ni
-                    .get_best_source_ip(ping_target)
-                    .ok_or(WorkerPoolError::NoEthernetInterfaces)?;
+                let src_addr = Self::get_source_addr_for_target(ping_targets, ping_target)?;
+
+                // Ping Workerを作成
                 let ping_worker = PingWorker::new(
                     token.clone(),
                     src_addr,
                     *ping_target,
                     cfg.interval,
                     recv_ip_tx.clone(),
-                    send_ip_rxs.remove(ping_target).unwrap(),
+                    send_ip_broadcast_rxs
+                        .get(ping_target)
+                        .unwrap()
+                        .resubscribe(),
                 );
                 ping_workers.push(ping_worker);
+
+                // Traceroute Workerを作成（設定で有効な場合のみ）
+                if cfg.traceroute.enable {
+                    let traceroute_worker = TracerouteWorker::new(
+                        token.clone(),
+                        src_addr,
+                        *ping_target,
+                        cfg.interval,
+                        cfg.traceroute.max_hops,
+                        recv_ip_tx.clone(),
+                        send_ip_broadcast_rxs
+                            .get(ping_target)
+                            .unwrap()
+                            .resubscribe(),
+                    );
+                    traceroute_workers.push(traceroute_worker);
+                }
             }
         }
 
         Ok(Self {
             ping_workers,
             nic_workers,
+            traceroute_workers,
         })
     }
 
@@ -95,6 +132,13 @@ impl WorkerPool {
             }));
         }
 
+        // Traceroute Workerの起動
+        for traceroute_worker in self.traceroute_workers {
+            tasks.push(tokio::spawn(async move {
+                traceroute_worker.run().await.map_err(WorkerPoolError::from)
+            }));
+        }
+
         // 全てのタスクが完了するまで待機
         for task in tasks {
             task.await.expect("Worker task failed")?;
@@ -112,7 +156,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::config::{ArpConfig, Config};
+    use crate::config::{ArpConfig, Config, TracerouteConfig};
     use crate::net_utils::arp_table::ArpTable;
     use crate::net_utils::netlink::NetworkInterface;
 
@@ -123,6 +167,7 @@ mod tests {
             timeout: chrono::Duration::seconds(5),
             buffer_size: 100,
             arp: ArpConfig::default(),
+            traceroute: TracerouteConfig::default(),
         }
     }
 
