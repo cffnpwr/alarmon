@@ -8,10 +8,10 @@ use super::nic_worker::NicWorkerError;
 use super::ping_worker::PingWorkerError;
 use super::traceroute_worker::{TracerouteWorker, TracerouteWorkerError};
 use crate::config::Config;
+use crate::core::nic_worker::{NicWorker, PingTargets};
+use crate::core::ping_worker::PingWorker;
 use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::netlink::NetlinkError;
-use crate::network::nic_worker::{NicWorker, PingTargets};
-use crate::network::ping_worker::PingWorker;
 
 #[derive(Debug, Error)]
 pub enum WorkerPoolError {
