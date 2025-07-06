@@ -1,0 +1,100 @@
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Paragraph};
+
+use crate::tui::models::AppState;
+use crate::tui::table::build_table_rows_data;
+
+pub fn render(frame: &mut Frame, app_state: &mut AppState) {
+    let main_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Header
+            Constraint::Length(1), // Padding
+            Constraint::Min(8),    // Main content
+            Constraint::Length(3), // Footer
+        ])
+        .split(frame.area());
+
+    render_header(frame, main_layout[0]);
+    // main_layout[1] is padding space
+    render_main_content(frame, app_state, main_layout[2]);
+    render_footer(frame, app_state, main_layout[3]);
+}
+
+fn render_header(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let header = Paragraph::new("Alarmon - Alive and Route Monitor")
+        .style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(Block::default());
+    frame.render_widget(header, area);
+}
+
+fn render_main_content(frame: &mut Frame, app_state: &mut AppState, area: ratatui::layout::Rect) {
+    use ratatui::widgets::Table;
+
+    let content_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0)])
+        .split(area);
+
+    // Extract data first to avoid borrowing conflicts
+    let ping_results = &app_state.ping_results;
+    let selected_index = app_state.selected_index;
+    let show_details = app_state.show_details;
+    let traceroute_hops = &app_state.traceroute_hops;
+
+    let rows = build_table_rows_data(ping_results, selected_index, show_details, traceroute_hops);
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(30), // Name column
+            Constraint::Length(20), // Host column
+            Constraint::Length(8),  // Loss column
+            Constraint::Length(10), // Latency column
+            Constraint::Length(10), // Avg column
+            Constraint::Min(20),    // Chart column
+        ],
+    )
+    .block(Block::default())
+    .header(
+        ratatui::widgets::Row::new(vec![
+            ratatui::widgets::Cell::from("Name")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::widgets::Cell::from("Host")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::widgets::Cell::from("Loss")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::widgets::Cell::from("Latency")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::widgets::Cell::from("Avg")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+            ratatui::widgets::Cell::from("Chart")
+                .style(Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+        ])
+        .style(Style::default().fg(Color::Yellow))
+        .bottom_margin(1),
+    )
+    .row_highlight_style(Style::default().bg(Color::DarkGray))
+    .highlight_symbol("► ");
+
+    frame.render_stateful_widget(table, content_layout[0], &mut app_state.table_state);
+}
+
+fn render_footer(frame: &mut Frame, app_state: &AppState, area: ratatui::layout::Rect) {
+    let footer_text = if app_state.show_details {
+        "Press Ctrl-C to quit | ↑/↓: Navigate | Enter/Space: Hide details"
+    } else {
+        "Press Ctrl-C to quit | ↑/↓: Navigate | Enter/Space: Show details"
+    };
+
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default());
+    frame.render_widget(footer, area);
+}
