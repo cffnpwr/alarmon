@@ -89,6 +89,34 @@ cargo llvm-cov
 - Follows rustfmt configuration with `StdExternalCrate` import grouping and `Module` granularity
 - Uses nightly Rust toolchain (configured in mise.toml)
 
+### Modern Rust Module Organization (Rust 2018+)
+
+- **Avoid `mod.rs`**: No longer required for modules with submodules
+- **Flexible module layout**: Can have both `foo.rs` and `foo/` directory for the same module
+- **Direct submodule placement**: Submodules can be placed directly in `foo/bar.rs` without needing `mod.rs`
+- **Simplified imports**: `extern crate` is no longer needed in most cases
+- **Consistent path resolution**: Use `crate::` prefix for referencing items within the current crate
+- **External crate references**: `::` prefix exclusively references external crates
+
+#### Preferred Module Structure Example:
+```
+src/
+├── lib.rs
+├── core.rs           # Instead of core/mod.rs
+├── core/
+│   ├── monitor.rs
+│   └── config.rs
+├── tui.rs            # Instead of tui/mod.rs
+└── tui/
+    ├── display.rs
+    └── event.rs
+```
+
+#### Import Guidelines:
+- Use `crate::` for internal crate references
+- Remove unnecessary `extern crate` declarations
+- Organize imports with `use` statements following rustfmt configuration
+
 ## Tool Management
 
 The project uses mise.toml for development tool management with:
