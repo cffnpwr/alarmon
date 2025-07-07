@@ -14,7 +14,7 @@ TBD
 
 #### Prequisites
 
-- Rust 1.70.0以上
+- Rust 1.85.0以上
 
 #### Build
 
