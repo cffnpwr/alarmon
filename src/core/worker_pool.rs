@@ -51,16 +51,8 @@ impl WorkerPool {
         arp_table: Arc<ArpTable>,
         cfg: &Config,
         targets: &FxHashMap<u32, PingTargets>,
-        update_sender: Option<mpsc::Sender<UpdateMessage>>,
+        update_sender: mpsc::Sender<UpdateMessage>,
     ) -> Result<Self, WorkerPoolError> {
-        // IPアドレスから表示名へのマップを作成
-        let mut target_display_map = FxHashMap::default();
-        for target_config in &cfg.targets {
-            if let Ok(target_ip) = target_config.host.parse::<std::net::Ipv4Addr>() {
-                let display_name = format!("{} ({})", target_config.name, target_config.host);
-                target_display_map.insert(target_ip, display_name);
-            }
-        }
         // Pcap Workerの集合
         let mut pcap_workers = Vec::new();
         // Ping Workerの集合
@@ -70,38 +62,40 @@ impl WorkerPool {
 
         // 各インターフェースに対してPcap Workerを起動
         for ping_targets in targets.values() {
+            let target_ips = ping_targets
+                .targets
+                .iter()
+                .map(|target| target.host)
+                .collect::<Vec<_>>();
             let pcap_result = PcapWorker::new(
                 token.clone(),
                 cfg,
                 ping_targets.ni.clone(),
                 arp_table.clone(),
-                ping_targets.targets.clone(),
+                target_ips,
             )?;
             pcap_workers.push(pcap_result.worker);
             let recv_ip_tx = pcap_result.sender;
             let send_ip_broadcast_rxs = pcap_result.receivers;
 
             // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
+            let ping_target_len = ping_targets.targets.len();
             for ping_target in &ping_targets.targets {
-                let src_addr = Self::get_source_addr_for_target(ping_targets, ping_target)?;
-                let target_display = target_display_map
-                    .get(ping_target)
-                    .cloned()
-                    .unwrap_or_else(|| format!("{ping_target}"));
+                let src_addr = Self::get_source_addr_for_target(ping_targets, &ping_target.host)?;
 
                 // Ping Workerを作成
                 let ping_worker = PingWorker::new(
                     token.clone(),
+                    ping_target.id,
                     src_addr,
-                    *ping_target,
+                    ping_target.host,
                     cfg.interval,
                     recv_ip_tx.clone(),
                     send_ip_broadcast_rxs
-                        .get(ping_target)
+                        .get(&ping_target.host)
                         .unwrap()
                         .resubscribe(),
                     update_sender.clone(),
-                    target_display.clone(),
                 );
                 ping_workers.push(ping_worker);
 
@@ -109,17 +103,17 @@ impl WorkerPool {
                 if cfg.traceroute.enable {
                     let traceroute_worker = TracerouteWorker::new(
                         token.clone(),
+                        ping_target.id + ping_target_len as u16,
                         src_addr,
-                        *ping_target,
+                        ping_target.host,
                         cfg.interval,
                         cfg.traceroute.max_hops,
                         recv_ip_tx.clone(),
                         send_ip_broadcast_rxs
-                            .get(ping_target)
+                            .get(&ping_target.host)
                             .unwrap()
                             .resubscribe(),
                         update_sender.clone(),
-                        target_display.clone(),
                     );
                     traceroute_workers.push(traceroute_worker);
                 }
@@ -220,8 +214,9 @@ mod tests {
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
         let config = create_test_config();
         let targets = FxHashMap::default();
+        let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
 
         assert!(result.is_ok());
         let worker_pool = result.unwrap();
@@ -240,11 +235,21 @@ mod tests {
         let ni = create_test_network_interface();
         let ping_targets = PingTargets {
             ni: ni.clone(),
-            targets: vec![Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 2)],
+            targets: vec![
+                crate::core::pcap_worker::PingTarget {
+                    id: 1,
+                    host: Ipv4Addr::new(192, 168, 1, 1),
+                },
+                crate::core::pcap_worker::PingTarget {
+                    id: 2,
+                    host: Ipv4Addr::new(192, 168, 1, 2),
+                },
+            ],
         };
         targets.insert(ni.index, ping_targets);
+        let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
 
         // 注意: このテストは実際のPcap初期化を試行するため、環境によっては失敗する可能性がある
         // そのため、結果の成功/失敗両方を許容する
@@ -281,11 +286,15 @@ mod tests {
 
         let ping_targets = PingTargets {
             ni: ni_no_ip,
-            targets: vec![Ipv4Addr::new(192, 168, 1, 1)],
+            targets: vec![crate::core::pcap_worker::PingTarget {
+                id: 1,
+                host: Ipv4Addr::new(192, 168, 1, 1),
+            }],
         };
         targets.insert(1, ping_targets);
+        let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
 
         // 注意: このテストも実際のPcap初期化を試行するため、
         // PcapErrorが先に発生する可能性がある
@@ -306,8 +315,9 @@ mod tests {
         let config = create_test_config();
         let targets = FxHashMap::default(); // 空のターゲット
 
+        let (update_tx, _update_rx) = mpsc::channel(100);
         let worker_pool =
-            WorkerPool::new(token.clone(), arp_table, &config, &targets, None).unwrap();
+            WorkerPool::new(token.clone(), arp_table, &config, &targets, update_tx).unwrap();
 
         // 空のワーカープールは即座に完了する
         let result = timeout(Duration::from_millis(100), worker_pool.run()).await;
@@ -327,7 +337,10 @@ mod tests {
         let ni1 = create_test_network_interface();
         let ping_targets1 = PingTargets {
             ni: ni1.clone(),
-            targets: vec![Ipv4Addr::new(192, 168, 1, 1)],
+            targets: vec![crate::core::pcap_worker::PingTarget {
+                id: 1,
+                host: Ipv4Addr::new(192, 168, 1, 1),
+            }],
         };
         targets.insert(ni1.index, ping_targets1);
 
@@ -345,11 +358,21 @@ mod tests {
         };
         let ping_targets2 = PingTargets {
             ni: ni2.clone(),
-            targets: vec![Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 2)],
+            targets: vec![
+                crate::core::pcap_worker::PingTarget {
+                    id: 2,
+                    host: Ipv4Addr::new(10, 0, 0, 1),
+                },
+                crate::core::pcap_worker::PingTarget {
+                    id: 3,
+                    host: Ipv4Addr::new(10, 0, 0, 2),
+                },
+            ],
         };
         targets.insert(ni2.index, ping_targets2);
+        let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
 
         // 環境によってはPcapエラーが発生する可能性があるが、
         // 成功した場合は正しい数のWorkerが作成されることを確認
