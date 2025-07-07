@@ -1,29 +1,25 @@
-use std::time::Duration;
-
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
 use crate::tui::models::{AppState, Event};
 
 pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Event>,
+    tx: mpsc::UnboundedSender<Event>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl EventHandler {
-    pub fn new(tick_rate: Duration, render_rate: Duration) -> Self {
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let task_tx = tx.clone();
         let token = CancellationToken::new();
         let task = tokio::spawn(async move {
             let mut reader = EventStream::new();
-            let mut tick_interval = interval(tick_rate);
-            let mut render_interval = interval(render_rate);
 
-            tx.send(Event::Init).unwrap();
-
+            task_tx.send(Event::Init).unwrap();
             loop {
                 tokio::select! {
                     _ = token.cancelled() => {
@@ -33,31 +29,29 @@ impl EventHandler {
                         match maybe_event {
                             Some(Ok(CrosstermEvent::Key(key))) => {
                                 if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-                                    tx.send(Event::Quit).unwrap();
+                                    task_tx.send(Event::Quit).unwrap();
                                 } else {
-                                    tx.send(Event::Key(key)).unwrap();
+                                    task_tx.send(Event::Key(key)).unwrap();
                                 }
                             }
                             Some(Err(_)) => {
-                                tx.send(Event::Error).unwrap();
+                                task_tx.send(Event::Error).unwrap();
                             }
                             _ => {}
                         }
                     }
-                    _ = tick_interval.tick() => {
-                        tx.send(Event::Tick).unwrap();
-                    }
-                    _ = render_interval.tick() => {
-                        tx.send(Event::Render).unwrap();
-                    }
                 }
             }
         });
-        Self { rx, task }
+        Self { rx, tx, task }
     }
 
     pub async fn next(&mut self) -> Option<Event> {
         self.rx.recv().await
+    }
+
+    pub fn get_sender(&self) -> mpsc::UnboundedSender<Event> {
+        self.tx.clone()
     }
 }
 
@@ -67,13 +61,27 @@ impl Drop for EventHandler {
     }
 }
 
-pub fn handle_key_event(app_state: &mut AppState, key: crossterm::event::KeyEvent) -> bool {
+pub fn handle_key_event(
+    app_state: &mut AppState,
+    key: KeyEvent,
+    event_sender: &mpsc::UnboundedSender<Event>,
+) {
     match key.code {
-        // KeyCode::Char('q') => return true, // quit
-        KeyCode::Up => app_state.move_up(),
-        KeyCode::Down => app_state.move_down(),
-        KeyCode::Enter | KeyCode::Char(' ') => app_state.toggle_details(),
+        KeyCode::Up => {
+            app_state.move_up();
+            event_sender.send(Event::Render).unwrap();
+        }
+        KeyCode::Down => {
+            app_state.move_down();
+            event_sender.send(Event::Render).unwrap();
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            app_state.toggle_details();
+            event_sender.send(Event::Render).unwrap();
+        }
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            // refresh機能は現在未実装
+        }
         _ => {}
     }
-    false // continue
 }

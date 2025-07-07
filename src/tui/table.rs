@@ -2,14 +2,25 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row};
 
-use crate::tui::models::{PingResult, PingStatus, TIMEOUT_MARKER, TracerouteHop};
+use crate::tui::models::{PingResult, PingStatus, TIMEOUT_MARKER, TracerouteHopHistory};
+
+fn create_block_chart(value: f64, min_val: f64, max_val: f64) -> char {
+    let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    if min_val == max_val {
+        return blocks[0];
+    }
+
+    let range = max_val - min_val;
+    let normalized = ((value - min_val) / range) * (blocks.len() - 1) as f64;
+    let block_index = normalized.round() as usize;
+    blocks[block_index.min(blocks.len() - 1)]
+}
 
 fn create_sparkline_with_timeouts(data: &[f64], max_width: usize) -> String {
     if data.is_empty() {
         return "-".to_string();
     }
-
-    let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
     // 利用可能な幅に合わせてデータを調整（最新データを左に表示）
     let display_data: Vec<f64> = if data.len() > max_width {
@@ -30,11 +41,11 @@ fn create_sparkline_with_timeouts(data: &[f64], max_width: usize) -> String {
         return "✗".repeat(display_data.len());
     }
 
-    let min_val = valid_values
+    let min_val = *valid_values
         .iter()
         .min_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(&0.0);
-    let max_val = valid_values
+    let max_val = *valid_values
         .iter()
         .max_by(|a, b| a.partial_cmp(b).unwrap())
         .unwrap_or(&0.0);
@@ -44,37 +55,19 @@ fn create_sparkline_with_timeouts(data: &[f64], max_width: usize) -> String {
     for &value in &display_data {
         if value == TIMEOUT_MARKER {
             sparkline.push('✗');
-        } else if min_val == max_val {
-            sparkline.push(blocks[0]);
         } else {
-            let range = max_val - min_val;
-            let normalized = ((value - min_val) / range) * (blocks.len() - 1) as f64;
-            let block_index = normalized.round() as usize;
-            sparkline.push(blocks[block_index.min(blocks.len() - 1)]);
+            sparkline.push(create_block_chart(value, min_val, max_val));
         }
     }
 
     sparkline
 }
 
-fn create_single_hop_chart(rtt_ms: u64, max_width: usize) -> String {
-    let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-    // RTTに基づいてブロックの高さを決定（0-100ms範囲で正規化）
-    let normalized_rtt = (rtt_ms.min(100) as f64 / 100.0) * (blocks.len() - 1) as f64;
-    let block_index = normalized_rtt.round() as usize;
-    let block = blocks[block_index.min(blocks.len() - 1)];
-
-    // チャート幅の1/4を使用してRTT表現
-    let chart_length = (max_width / 4).max(3);
-    format!("{} RTT", block.to_string().repeat(chart_length))
-}
-
 pub fn build_table_rows_data(
     ping_results: &[PingResult],
     selected_index: usize,
     show_details: bool,
-    traceroute_hops: &[TracerouteHop],
+    traceroute_hops: &[TracerouteHopHistory],
     chart_width: usize,
 ) -> Vec<Row<'static>> {
     let mut rows: Vec<Row<'static>> = Vec::new();
@@ -88,10 +81,19 @@ pub fn build_table_rows_data(
 
         let name_with_status = format!("{} {}", status_icon, result.target);
         let host = result.host.clone();
-        let loss = if result.packet_loss > 0.0 {
-            format!("{}%", result.packet_loss)
-        } else {
-            "0%".to_string()
+        let loss = {
+            let rounded = (result.packet_loss * 100.0).round() / 100.0;
+            if rounded == 0.0 {
+                "0%".to_string()
+            } else if rounded == rounded.trunc() {
+                format!("{}%", rounded as i32)
+            } else {
+                format!("{:.2}%", rounded)
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_string()
+                    + "%"
+            }
         };
 
         let latency = if let Some(rtt) = result.response_time {
@@ -158,30 +160,55 @@ pub fn build_table_rows_data(
         // Add traceroute details if this row is selected and details are shown
         if show_details && index == selected_index {
             for hop in traceroute_hops {
-                let (address_text, rtt_text, avg_text, hop_chart) =
-                    match (hop.address, hop.response_time) {
+                let (address_text, rtt_text, avg_text, hop_chart_cell) =
+                    match (hop.address, hop.latency) {
                         (Some(addr), Some(rtt)) => {
-                            let rtt_ms = rtt.num_milliseconds() as u64;
-                            let avg_text = if let Some(avg) = hop.avg_response_time {
-                                format!("{}ms", avg.num_milliseconds())
+                            let rtt_ms = rtt.num_milliseconds();
+                            let avg_text = format!("{}ms", rtt_ms);
+
+                            // Tracerouteのsparklineを作成
+                            let hop_chart = if !hop.latency_history.is_empty() {
+                                create_sparkline_with_timeouts(&hop.latency_history, chart_width)
                             } else {
                                 "-".to_string()
                             };
 
-                            // 履歴データがある場合はsparklineチャート、ない場合は単一ホップチャート
-                            let chart = if !hop.latency_history.is_empty() {
-                                create_sparkline_with_timeouts(&hop.latency_history, chart_width)
+                            // Tracerouteチャートセルを色分けして作成
+                            let chart_cell = if !hop.latency_history.is_empty() {
+                                let mut spans = Vec::new();
+                                let chart_chars: Vec<char> = hop_chart.chars().collect();
+
+                                for ch in chart_chars {
+                                    if ch == '✗' {
+                                        spans.push(Span::styled(
+                                            ch.to_string(),
+                                            Style::default().fg(Color::Red),
+                                        ));
+                                    } else {
+                                        spans.push(Span::styled(
+                                            ch.to_string(),
+                                            Style::default().fg(Color::Blue),
+                                        ));
+                                    }
+                                }
+
+                                Cell::from(Line::from(spans))
                             } else {
-                                create_single_hop_chart(rtt_ms, chart_width)
+                                Cell::from("-").style(Style::default().fg(Color::Gray))
                             };
 
-                            (addr.to_string(), format!("{rtt_ms}ms"), avg_text, chart)
+                            (
+                                addr.to_string(),
+                                format!("{rtt_ms}ms"),
+                                avg_text,
+                                chart_cell,
+                            )
                         }
                         _ => (
                             "*".to_string(),
                             "*".to_string(),
                             "*".to_string(),
-                            "* * *".to_string(),
+                            Cell::from("*").style(Style::default().fg(Color::Red)),
                         ),
                     };
 
@@ -192,29 +219,7 @@ pub fn build_table_rows_data(
                     Cell::from(""),
                     Cell::from(rtt_text).style(Style::default().fg(Color::Cyan)),
                     Cell::from(avg_text).style(Style::default().fg(Color::Cyan)),
-                    // Tracerouteチャートも色分け表示に対応
-                    if hop_chart.contains('✗') {
-                        let mut spans = Vec::new();
-                        let chart_chars: Vec<char> = hop_chart.chars().collect();
-
-                        for ch in chart_chars {
-                            if ch == '✗' {
-                                spans.push(Span::styled(
-                                    ch.to_string(),
-                                    Style::default().fg(Color::Red),
-                                ));
-                            } else {
-                                spans.push(Span::styled(
-                                    ch.to_string(),
-                                    Style::default().fg(Color::Blue),
-                                ));
-                            }
-                        }
-
-                        Cell::from(Line::from(spans))
-                    } else {
-                        Cell::from(hop_chart).style(Style::default().fg(Color::Blue))
-                    },
+                    hop_chart_cell,
                 ]));
             }
         }

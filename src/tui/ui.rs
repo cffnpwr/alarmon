@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::tui::models::{AppState, PingResult};
@@ -24,13 +25,35 @@ pub fn render(frame: &mut Frame, app_state: &mut AppState) {
 }
 
 fn render_header(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let header = Paragraph::new("Alarmon - Alive and Route Monitor")
-        .style(
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    let title = "Alarmon - Alive and Route Monitoring Tool";
+    let version_text = format!("v{}", VERSION);
+
+    // Calculate padding for center alignment
+    let total_width = area.width as usize;
+    let title_len = title.len();
+    let version_len = version_text.len();
+
+    // Center the title
+    let title_padding = (total_width.saturating_sub(title_len)) / 2;
+
+    // Calculate remaining space for version alignment
+    let remaining_space = total_width.saturating_sub(title_padding + title_len + version_len);
+
+    let line = Line::from(vec![
+        Span::raw(" ".repeat(title_padding)),
+        Span::styled(
+            title,
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
-        )
-        .block(Block::default());
+        ),
+        Span::raw(" ".repeat(remaining_space)),
+        Span::raw(version_text),
+    ]);
+
+    let header = Paragraph::new(line).block(Block::default());
     frame.render_widget(header, area);
 }
 
