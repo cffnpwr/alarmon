@@ -13,6 +13,7 @@ use tokio::time::{interval, timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::net_utils::netlink::NetlinkError;
+use crate::tui::models::{TracerouteHop, TracerouteUpdate, UpdateMessage};
 
 #[derive(Debug, Error)]
 pub enum TracerouteWorkerError {
@@ -29,12 +30,12 @@ pub enum TracerouteWorkerError {
 struct HopInfo {
     /// ホップ番号（TTL値）
     hop_number: u8,
-    /// ホップのIPアドレス
-    ip_address: Ipv4Addr,
-    /// 応答時間
-    rtt: Duration,
-    /// 応答を受信した時刻
-    received_at: DateTime<Utc>,
+    /// ホップのIPアドレス（タイムアウト時はNone）
+    ip_address: Option<Ipv4Addr>,
+    /// 応答時間（タイムアウト時はNone）
+    rtt: Option<Duration>,
+    /// 応答を受信した時刻（タイムアウト時はNone）
+    received_at: Option<DateTime<Utc>>,
 }
 
 /// Tracerouteの応答タイプ
@@ -65,9 +66,14 @@ pub struct TracerouteWorker {
     tx: mpsc::Sender<IPv4Packet>,
     /// IPパケットを受信するためのチャネル
     rx: broadcast::Receiver<IPv4Packet>,
+    /// UpdateMessage送信用チャネル
+    update_tx: Option<mpsc::Sender<UpdateMessage>>,
+    /// ターゲットホストの表示名
+    target_display: String,
 }
 
 impl TracerouteWorker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: CancellationToken,
         src: Ipv4Addr,
@@ -76,6 +82,8 @@ impl TracerouteWorker {
         max_hops: u8,
         tx: mpsc::Sender<IPv4Packet>,
         rx: broadcast::Receiver<IPv4Packet>,
+        update_tx: Option<mpsc::Sender<UpdateMessage>>,
+        target_display: String,
     ) -> Self {
         let mut rng = rand::rng();
         let id = rng.random::<u16>();
@@ -89,6 +97,8 @@ impl TracerouteWorker {
             max_hops,
             tx,
             rx,
+            update_tx,
+            target_display,
         }
     }
 
@@ -128,32 +138,54 @@ impl TracerouteWorker {
 
             match self.send_and_wait_for_response(ttl).await? {
                 TracerouteResponse::TimeExceeded(hop_info) => {
-                    debug!(
-                        "Hop {}: {} ({}ms)",
-                        hop_info.hop_number,
-                        hop_info.ip_address,
-                        hop_info.rtt.num_milliseconds()
-                    );
+                    match (hop_info.ip_address, hop_info.rtt) {
+                        (Some(ip), Some(rtt)) => {
+                            debug!(
+                                "Hop {}: {} ({}ms)",
+                                hop_info.hop_number,
+                                ip,
+                                rtt.num_milliseconds()
+                            );
+                        }
+                        _ => {
+                            debug!("Hop {}: * * *", hop_info.hop_number);
+                        }
+                    }
                     hops.push(hop_info);
                 }
                 TracerouteResponse::EchoReply(hop_info) => {
-                    debug!(
-                        "Target reached at hop {}: {} ({}ms)",
-                        hop_info.hop_number,
-                        hop_info.ip_address,
-                        hop_info.rtt.num_milliseconds()
-                    );
+                    match (hop_info.ip_address, hop_info.rtt) {
+                        (Some(ip), Some(rtt)) => {
+                            debug!(
+                                "Target reached at hop {}: {} ({}ms)",
+                                hop_info.hop_number,
+                                ip,
+                                rtt.num_milliseconds()
+                            );
+                        }
+                        _ => {
+                            debug!("Target reached at hop {}: * * *", hop_info.hop_number);
+                        }
+                    }
                     hops.push(hop_info);
                     break; // 宛先に到達したので終了
                 }
                 TracerouteResponse::Timeout { ttl } => {
                     debug!("Timeout at hop {ttl}");
-                    // タイムアウトは記録しないが、処理は継続
+                    // タイムアウトもホップとして記録（*で表示するため）
+                    let timeout_hop = HopInfo {
+                        hop_number: ttl,
+                        ip_address: None,
+                        rtt: None,
+                        received_at: None,
+                    };
+                    hops.push(timeout_hop);
                 }
             }
         }
 
         self.print_traceroute_result(&hops);
+        self.send_traceroute_update(&hops).await;
         Ok(())
     }
 
@@ -247,9 +279,9 @@ impl TracerouteWorker {
                         {
                             let hop_info = HopInfo {
                                 hop_number: expected_ttl,
-                                ip_address: pkt.src,
-                                rtt,
-                                received_at,
+                                ip_address: Some(pkt.src),
+                                rtt: Some(rtt),
+                                received_at: Some(received_at),
                             };
                             return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
                         }
@@ -264,9 +296,9 @@ impl TracerouteWorker {
                 {
                     let hop_info = HopInfo {
                         hop_number: expected_ttl,
-                        ip_address: pkt.src,
-                        rtt,
-                        received_at,
+                        ip_address: Some(pkt.src),
+                        rtt: Some(rtt),
+                        received_at: Some(received_at),
                     };
                     return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
                 }
@@ -281,20 +313,60 @@ impl TracerouteWorker {
 
     /// tracerouteの結果を表示
     fn print_traceroute_result(&self, hops: &[HopInfo]) {
+        // TUIモードでない場合のみログ出力
+        if self.update_tx.is_some() {
+            return;
+        }
+
         if !hops.is_empty() {
             info!("=== Traceroute to {} ===", self.target);
             for hop in hops {
-                info!(
-                    "{} -> {} {} {}ms",
-                    hop.hop_number,
-                    hop.ip_address,
-                    self.target,
-                    hop.rtt.num_milliseconds()
-                );
+                match (hop.ip_address, hop.rtt) {
+                    (Some(ip), Some(rtt)) => {
+                        info!(
+                            "{} -> {} {} {}ms",
+                            hop.hop_number,
+                            ip,
+                            self.target,
+                            rtt.num_milliseconds()
+                        );
+                    }
+                    _ => {
+                        info!("{} -> * * *", hop.hop_number);
+                    }
+                }
             }
             info!("=== End traceroute to {} ===", self.target);
         } else {
             info!("No hops discovered for traceroute to {}", self.target);
+        }
+    }
+
+    /// TUIにtraceroute結果を送信
+    async fn send_traceroute_update(&self, hops: &[HopInfo]) {
+        if let Some(ref update_tx) = self.update_tx {
+            let traceroute_hops: Vec<TracerouteHop> = hops
+                .iter()
+                .map(|hop| TracerouteHop {
+                    hop_number: hop.hop_number,
+                    address: hop.ip_address,
+                    response_time: hop.rtt,
+                    latency_history: Vec::new(),
+                    avg_response_time: None,
+                })
+                .collect();
+
+            let traceroute_update = TracerouteUpdate {
+                target: self.target_display.clone(),
+                hops: traceroute_hops,
+            };
+
+            if let Err(e) = update_tx
+                .send(UpdateMessage::Traceroute(traceroute_update))
+                .await
+            {
+                warn!("Failed to send traceroute update to TUI: {e}");
+            }
         }
     }
 }
@@ -313,14 +385,14 @@ mod tests {
         // [正常系] HopInfoの作成
         let hop_info = HopInfo {
             hop_number: 1,
-            ip_address: Ipv4Addr::new(192, 168, 1, 1),
-            rtt: Duration::milliseconds(10),
-            received_at: Utc::now(),
+            ip_address: Some(Ipv4Addr::new(192, 168, 1, 1)),
+            rtt: Some(Duration::milliseconds(10)),
+            received_at: Some(Utc::now()),
         };
 
         assert_eq!(hop_info.hop_number, 1);
-        assert_eq!(hop_info.ip_address, Ipv4Addr::new(192, 168, 1, 1));
-        assert_eq!(hop_info.rtt, Duration::milliseconds(10));
+        assert_eq!(hop_info.ip_address, Some(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(hop_info.rtt, Some(Duration::milliseconds(10)));
     }
 
     #[test]
@@ -334,8 +406,17 @@ mod tests {
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
 
-        let traceroute_worker =
-            TracerouteWorker::new(token, src, target, interval, max_hops, tx, rx);
+        let traceroute_worker = TracerouteWorker::new(
+            token,
+            src,
+            target,
+            interval,
+            max_hops,
+            tx,
+            rx,
+            None,
+            "test_target".to_string(),
+        );
 
         assert_eq!(traceroute_worker.src, src);
         assert_eq!(traceroute_worker.target, target);
@@ -357,8 +438,17 @@ mod tests {
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
 
-        let traceroute_worker =
-            TracerouteWorker::new(token.clone(), src, target, interval, max_hops, tx, rx);
+        let traceroute_worker = TracerouteWorker::new(
+            token.clone(),
+            src,
+            target,
+            interval,
+            max_hops,
+            tx,
+            rx,
+            None,
+            "test_target".to_string(),
+        );
 
         // ワーカーを短時間実行してからキャンセル
         let run_handle = tokio::spawn(traceroute_worker.run());
@@ -384,7 +474,17 @@ mod tests {
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
 
-        let worker = TracerouteWorker::new(token, src, target, interval, max_hops, tx, rx);
+        let worker = TracerouteWorker::new(
+            token,
+            src,
+            target,
+            interval,
+            max_hops,
+            tx,
+            rx,
+            None,
+            "test_target".to_string(),
+        );
         let sent_at = Utc::now() - Duration::milliseconds(100);
         let expected_ttl = 3;
 
@@ -431,8 +531,8 @@ mod tests {
             match result {
                 Some(TracerouteResponse::TimeExceeded(hop_info)) => {
                     assert_eq!(hop_info.hop_number, expected_ttl);
-                    assert_eq!(hop_info.ip_address, Ipv4Addr::new(10, 0, 0, 1));
-                    assert!(hop_info.rtt.num_milliseconds() >= 100);
+                    assert_eq!(hop_info.ip_address, Some(Ipv4Addr::new(10, 0, 0, 1)));
+                    assert!(hop_info.rtt.unwrap().num_milliseconds() >= 100);
                 }
                 _ => panic!("Expected TimeExceeded response"),
             }
@@ -463,8 +563,8 @@ mod tests {
             match result {
                 Some(TracerouteResponse::EchoReply(hop_info)) => {
                     assert_eq!(hop_info.hop_number, expected_ttl);
-                    assert_eq!(hop_info.ip_address, target);
-                    assert!(hop_info.rtt.num_milliseconds() >= 100);
+                    assert_eq!(hop_info.ip_address, Some(target));
+                    assert!(hop_info.rtt.unwrap().num_milliseconds() >= 100);
                 }
                 _ => panic!("Expected EchoReply response"),
             }

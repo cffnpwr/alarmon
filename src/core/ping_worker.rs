@@ -13,6 +13,7 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
 use crate::net_utils::netlink::NetlinkError;
+use crate::tui::models::{PingUpdate, UpdateMessage};
 
 #[derive(Debug, Error)]
 pub enum PingWorkerError {
@@ -66,6 +67,12 @@ pub struct PingResponseReceiver {
 
     /// 送信通知受信用チャネル
     ping_rx: mpsc::Receiver<PendingPing>,
+
+    /// UpdateMessage送信用チャネル
+    update_tx: Option<mpsc::Sender<UpdateMessage>>,
+
+    /// ターゲットホストの表示名
+    target_display: String,
 }
 
 pub struct PingWorker {
@@ -75,6 +82,7 @@ pub struct PingWorker {
 }
 
 impl PingWorker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: CancellationToken,
         src: Ipv4Addr,
@@ -82,6 +90,8 @@ impl PingWorker {
         interval: Duration,
         tx: mpsc::Sender<IPv4Packet>,
         rx: broadcast::Receiver<IPv4Packet>,
+        update_tx: Option<mpsc::Sender<UpdateMessage>>,
+        target_display: String,
     ) -> Self {
         let mut rng = rand::rng();
         let id = rng.random::<u16>();
@@ -105,6 +115,8 @@ impl PingWorker {
             pending_pings: pendings,
             rx,
             ping_rx,
+            update_tx,
+            target_display,
         };
 
         Self {
@@ -186,6 +198,8 @@ impl PingRequestSender {
 
 impl PingResponseReceiver {
     async fn listen_recv_ip_packets(mut self) -> Result<(), PingWorkerError> {
+        let mut timeout_interval = interval(std::time::Duration::from_secs(5)); // 5秒タイムアウト
+
         loop {
             tokio::select! {
                 // 送信通知を受信
@@ -197,6 +211,10 @@ impl PingResponseReceiver {
                     if let Err(e) = self.handle_recv_ip_packet(pkt).await {
                         warn!("Failed to handle received IP packet: {e}");
                     }
+                }
+                // タイムアウトチェック
+                _ = timeout_interval.tick() => {
+                    self.check_timeouts().await;
                 }
                 else => break,
             }
@@ -225,12 +243,32 @@ impl PingResponseReceiver {
             let pending_ping = self.pending_pings.remove(&seq).unwrap();
 
             let latency = Utc::now() - pending_ping.sent_at;
-            info!(
-                "Ping response received: {} (seq: {}, rtt: {} ms)",
-                pending_ping.target_ip,
-                seq,
-                latency.num_milliseconds()
-            );
+
+            // TUIモードでない場合のみログ出力
+            if self.update_tx.is_none() {
+                info!(
+                    "Ping response received: {} (seq: {}, rtt: {} ms)",
+                    pending_ping.target_ip,
+                    seq,
+                    latency.num_milliseconds()
+                );
+            }
+
+            // TUIへのUpdateMessage送信
+            if let Some(ref update_tx) = self.update_tx {
+                let ping_update = PingUpdate {
+                    target: self.target_display.clone(),
+                    host: Some(pending_ping.target_ip.to_string()), // IPアドレスをhostとして設定
+                    success: true,
+                    latency: Some(Duration::milliseconds(latency.num_milliseconds())),
+                    error: None,
+                    traceroute_hops: None,
+                };
+
+                if let Err(e) = update_tx.send(UpdateMessage::Ping(ping_update)).await {
+                    warn!("Failed to send ping update to TUI: {e}");
+                }
+            }
         } else {
             debug!(
                 "Received message is not Echo Reply: {}",
@@ -239,6 +277,42 @@ impl PingResponseReceiver {
         }
 
         Ok(())
+    }
+
+    async fn check_timeouts(&mut self) {
+        let now = Utc::now();
+        let timeout_duration = Duration::seconds(5); // 5秒タイムアウト
+        let mut timed_out = Vec::new();
+
+        // タイムアウトしたpingを特定
+        for (seq, pending_ping) in &self.pending_pings {
+            if now - pending_ping.sent_at > timeout_duration {
+                timed_out.push(*seq);
+            }
+        }
+
+        // タイムアウトしたpingを処理
+        for seq in timed_out {
+            if let Some(pending_ping) = self.pending_pings.remove(&seq) {
+                warn!("Ping timeout for {} (seq: {})", pending_ping.target_ip, seq);
+
+                // TUIへのタイムアウト通知
+                if let Some(ref update_tx) = self.update_tx {
+                    let ping_update = PingUpdate {
+                        target: self.target_display.clone(),
+                        host: Some(pending_ping.target_ip.to_string()), // IPアドレスをhostとして設定
+                        success: false,
+                        latency: None,
+                        error: Some("タイムアウト".to_string()),
+                        traceroute_hops: None,
+                    };
+
+                    if let Err(e) = update_tx.send(UpdateMessage::Ping(ping_update)).await {
+                        warn!("Failed to send ping timeout update to TUI: {e}");
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -280,7 +354,16 @@ mod tests {
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
 
-        let ping_worker = PingWorker::new(token, src, target, interval, tx, rx);
+        let ping_worker = PingWorker::new(
+            token,
+            src,
+            target,
+            interval,
+            tx,
+            rx,
+            None,
+            "test_target".to_string(),
+        );
 
         assert_eq!(ping_worker.sender.src, src);
         assert_eq!(ping_worker.sender.target, target);
@@ -333,6 +416,8 @@ mod tests {
             pending_pings,
             rx,
             ping_rx,
+            update_tx: None,
+            target_display: "test".to_string(),
         };
 
         assert_eq!(receiver.identifier, identifier);
@@ -407,6 +492,8 @@ mod tests {
             pending_pings,
             rx,
             ping_rx,
+            update_tx: None,
+            target_display: "test".to_string(),
         };
 
         // ICMP Echo Replyパケットを作成
@@ -507,7 +594,16 @@ mod tests {
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
 
-        let ping_worker = PingWorker::new(token.clone(), src, target, interval, tx, rx);
+        let ping_worker = PingWorker::new(
+            token.clone(),
+            src,
+            target,
+            interval,
+            tx,
+            rx,
+            None,
+            "test_target".to_string(),
+        );
 
         // ワーカーを短時間実行してからキャンセル
         let run_handle = tokio::spawn(ping_worker.run());
@@ -581,6 +677,8 @@ mod tests {
             pending_pings,
             rx,
             ping_rx,
+            update_tx: None,
+            target_display: "test".to_string(),
         };
 
         // 送信通知を送る
@@ -634,6 +732,8 @@ mod tests {
             pending_pings,
             rx,
             ping_rx,
+            update_tx: None,
+            target_display: "test".to_string(),
         };
 
         // 不正なICMPペイロードのIPパケット
