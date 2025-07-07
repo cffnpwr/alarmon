@@ -5,22 +5,21 @@ use std::sync::Arc;
 use anyhow::Result;
 use fxhash::FxHashMap;
 use itertools::Itertools;
-use log::{info, warn};
+use log::info;
+use pcap_worker::{PingTarget, PingTargets};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+pub use worker_pool::WorkerPool;
 
 use crate::config::Config;
 use crate::net_utils::arp_table::ArpTable;
-use crate::net_utils::netlink::{LinkType, Netlink};
+use crate::net_utils::netlink::Netlink;
 use crate::tui::models::UpdateMessage;
 
 pub mod pcap_worker;
 pub mod ping_worker;
 pub mod traceroute_worker;
 pub mod worker_pool;
-
-use pcap_worker::{PingTarget, PingTargets};
-pub use worker_pool::WorkerPool;
 
 pub async fn run_ping_monitoring(
     token: CancellationToken,
@@ -36,10 +35,6 @@ pub async fn run_ping_monitoring(
         // LinkTypeを確認（Ethernetのみサポート）
         let netlink = Netlink::new()?;
         let route = netlink.get_route(target_ip)?;
-        if route.link_type == LinkType::RawIP {
-            warn!("{} is not supported LinkType.", route.interface.name);
-            continue;
-        }
 
         let ping_targets = ping_targets_by_ni
             .entry(route.interface.index)

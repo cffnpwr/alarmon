@@ -97,13 +97,11 @@ impl AppState {
         let mut ping_results = HashMap::new();
 
         for target in &targets {
-            // targetがドメイン名の場合でもhostにはIPアドレスのみを表示したいが、
-            // ここでは一旦targetをそのまま使用し、実際のPing処理でIPアドレスに更新される
             ping_results.insert(
                 target.clone(),
                 PingResult {
                     target: target.clone(),
-                    host: target.clone(), // Ping処理でIPアドレスに更新される
+                    host: target.clone(),
                     status: PingStatus::Success,
                     response_time: None,
                     last_updated: Instant::now(),

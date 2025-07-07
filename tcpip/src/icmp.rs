@@ -298,7 +298,6 @@ mod tests {
         // [正常系] Echo Replyメッセージの生成
         let data = b"pong data".to_vec();
         let message = ICMPMessage::echo_reply(0xABCD, 0xEF01, data.clone());
-        dbg!(&message);
 
         match &message {
             ICMPMessage::EchoReply(echo) => {

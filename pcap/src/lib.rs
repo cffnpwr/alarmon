@@ -25,6 +25,7 @@ pub trait DataLinkReceiver: Send {
     async fn recv(&mut self) -> Result<Vec<u8>, PcapError>;
 }
 
-pub enum Channel {
-    Ethernet(Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>),
+pub struct Channel {
+    pub sender: Box<dyn DataLinkSender>,
+    pub receiver: Box<dyn DataLinkReceiver>,
 }

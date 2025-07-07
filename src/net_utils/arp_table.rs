@@ -11,8 +11,8 @@ use tcpip::ip_cidr::IPCIDR;
 use thiserror::Error;
 use tokio::time::timeout;
 
+use super::netlink::{Netlink, NetlinkError, NetworkInterface, RouteEntry};
 use crate::config::ArpConfig;
-use crate::net_utils::netlink::{Netlink, NetlinkError, NetworkInterface, RouteEntry};
 
 #[derive(Debug, Error)]
 pub enum ArpTableError {
@@ -61,7 +61,7 @@ pub struct ArpTable {
 }
 
 impl ArpTable {
-    pub fn new(arp_config: &ArpConfig) -> Self {
+    pub(crate) fn new(arp_config: &ArpConfig) -> Self {
         Self {
             entries: RwLock::new(FxHashMap::default()),
             default_ttl: arp_config.ttl,
@@ -126,9 +126,8 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
 
     // インターフェースでパケットキャプチャを開始
     let cap = pcap_interface.open(false)?;
-    let (mut sender, mut receiver) = match cap {
-        pcap::Channel::Ethernet(s, r) => (s, r),
-    };
+    let mut sender = cap.sender;
+    let mut receiver = cap.receiver;
 
     // ARPリクエストパケットを作成
     let target_mac = MacAddr::try_from("00:00:00:00:00:00")?;
@@ -244,7 +243,10 @@ mod tests {
                 packet: self.packets_to_receive.clone(),
                 returned: false,
             };
-            Ok(Channel::Ethernet(Box::new(sender), Box::new(receiver)))
+            Ok(Channel {
+                sender: Box::new(sender),
+                receiver: Box::new(receiver),
+            })
         }
     }
 
@@ -435,6 +437,7 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
             mac_addr: MacAddr::try_from("00:11:22:33:44:55").unwrap(),
+            linktype: LinkType::Ethernet,
         };
 
         let result = get_source_ip(&interface, Ipv4Addr::new(192, 168, 1, 1));
@@ -447,6 +450,7 @@ mod tests {
             name: "eth1".to_string(),
             ip_addrs: vec![],
             mac_addr: MacAddr::try_from("00:11:22:33:44:55").unwrap(),
+            linktype: LinkType::Ethernet,
         };
 
         let result = get_source_ip(&interface_no_ip, Ipv4Addr::new(192, 168, 1, 1));
@@ -474,6 +478,7 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
             mac_addr: interface_mac,
+            linktype: LinkType::Ethernet,
         };
 
         // ゲートウェイ経由のルートエントリを作成
@@ -481,7 +486,6 @@ mod tests {
             interface,
             to: IpAddr::V4(target_ip),
             via: Some(IpAddr::V4(gateway_ip)),
-            link_type: LinkType::Ethernet,
         };
 
         // ARP応答パケットを作成
@@ -518,12 +522,12 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
             mac_addr: interface_mac,
+            linktype: LinkType::Ethernet,
         };
         let route_entry_timeout = RouteEntry {
             interface: interface_timeout,
             to: IpAddr::V4(target_ip),
             via: None, // 直接接続
-            link_type: LinkType::Ethernet,
         };
 
         let timeout_short = Duration::milliseconds(50);

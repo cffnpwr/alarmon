@@ -4,19 +4,21 @@ use std::sync::Arc;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use fxhash::FxHashMap;
+#[cfg(target_os = "macos")]
+use libc::AF_INET;
 use log::{debug, info, warn};
-use pcap::{
-    Channel, DataLinkReceiver, DataLinkSender, NetworkInterface as PcapNetworkInterface, Pcap as _,
-};
+use pcap::{DataLinkReceiver, DataLinkSender, NetworkInterface as PcapNetworkInterface, Pcap as _};
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError};
 use tcpip::ipv4::{IPv4Packet, Protocol};
+#[cfg(target_os = "macos")]
+use tcpip::loopback::{LoopbackFrame, LoopbackFrameError};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::net_utils::arp_table::{ArpTable, ArpTableError};
-use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
+use crate::net_utils::netlink::{LinkType, NetlinkError, NetworkInterface};
 
 #[derive(Debug, Clone)]
 pub struct TimestampedPacket {
@@ -42,6 +44,9 @@ pub enum PcapWorkerError {
     PcapError(#[from] pcap::PcapError),
     #[error(transparent)]
     EthernetFrameError(#[from] EthernetFrameError),
+    #[cfg(target_os = "macos")]
+    #[error(transparent)]
+    LoopbackFrameError(#[from] LoopbackFrameError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +61,7 @@ pub(crate) struct PingTargets {
     pub(crate) targets: Vec<PingTarget>,
 }
 
-pub struct EthernetFrameReceiver {
+pub struct DatalinkFrameReceiver {
     /// WorkerがDatalink Frameを受信するNIC
     ni: NetworkInterface,
 
@@ -67,9 +72,9 @@ pub struct EthernetFrameReceiver {
     ip_txs: FxHashMap<Ipv4Addr, broadcast::Sender<TimestampedPacket>>,
 }
 
-impl std::fmt::Debug for EthernetFrameReceiver {
+impl std::fmt::Debug for DatalinkFrameReceiver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EthernetFrameReceiver")
+        f.debug_struct("DatalinkFrameReceiver")
             .field("ni", &self.ni)
             .field("datalink_rx", &"<DataLinkReceiver>")
             .field("ip_txs", &self.ip_txs)
@@ -77,7 +82,7 @@ impl std::fmt::Debug for EthernetFrameReceiver {
     }
 }
 
-pub struct EthernetFrameSender {
+pub struct DatalinkFrameSender {
     /// WorkerがDatalink Frameを送信するNIC
     ni: NetworkInterface,
 
@@ -91,9 +96,9 @@ pub struct EthernetFrameSender {
     ip_rx: mpsc::Receiver<IPv4Packet>,
 }
 
-impl std::fmt::Debug for EthernetFrameSender {
+impl std::fmt::Debug for DatalinkFrameSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EthernetFrameSender")
+        f.debug_struct("DatalinkFrameSender")
             .field("ni", &self.ni)
             .field("arp_table", &self.arp_table)
             .field("datalink_tx", &"<DataLinkSender>")
@@ -105,8 +110,8 @@ impl std::fmt::Debug for EthernetFrameSender {
 #[derive(Debug)]
 pub struct PcapWorker {
     token: CancellationToken,
-    receiver: EthernetFrameReceiver,
-    sender: EthernetFrameSender,
+    receiver: DatalinkFrameReceiver,
+    sender: DatalinkFrameSender,
 }
 
 impl PcapWorker {
@@ -114,8 +119,10 @@ impl PcapWorker {
     ///
     /// # Arguments
     /// * `token` - Worker停止用のCancellationToken
+    /// * `cfg` - アプリケーションの設定
     /// * `ni` - 使用するネットワークインターフェース
     /// * `arp_table` - ARPテーブル
+    /// * `target_ips` - 送信先IPアドレスのリスト
     ///
     /// # Returns
     /// * `Ok((PcapWorker, mpsc::Sender<IPv4Packet>, FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>))` - (Pcap Worker, NICへの送信用チャネル, 宛先IPアドレスごとのNICからの受信用チャネル)
@@ -129,9 +136,8 @@ impl PcapWorker {
         target_ips: impl AsRef<[Ipv4Addr]>,
     ) -> Result<PcapWorkerResult, PcapWorkerError> {
         let cap = PcapNetworkInterface::from(&ni).open(false)?;
-        let (sender, receiver) = match cap {
-            Channel::Ethernet(s, r) => (s, r),
-        };
+        let sender: Box<dyn DataLinkSender> = cap.sender;
+        let receiver: Box<dyn DataLinkReceiver> = cap.receiver;
 
         // 上位プロトコルWorkerとの通信チャネルを作成
         let (recv_ip_tx, recv_ip_rx) = mpsc::channel(cfg.buffer_size);
@@ -145,13 +151,13 @@ impl PcapWorker {
             },
         );
 
-        let receiver = EthernetFrameReceiver {
+        let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: receiver,
             ip_txs: send_ip_txs,
         };
 
-        let sender = EthernetFrameSender {
+        let sender = DatalinkFrameSender {
             ni,
             arp_table,
             datalink_tx: sender,
@@ -176,21 +182,21 @@ impl PcapWorker {
 
         let token = self.token.clone();
         let ip_handle = tokio::spawn(self.sender.listen_ip_packets());
-        let ethernet_handle = tokio::spawn(self.receiver.listen_ethernet_frames());
+        let datalink_handle = tokio::spawn(self.receiver.listen_datalink_frames());
 
         tokio::select! {
             _ = token.cancelled() => {
                 info!("Pcap Worker for interface {interface_name} is stopping");
             }
             _ = ip_handle => {},
-            _ = ethernet_handle => {},
+            _ = datalink_handle => {},
         }
 
         Ok(())
     }
 }
 
-impl EthernetFrameSender {
+impl DatalinkFrameSender {
     async fn listen_ip_packets(mut self) -> Result<(), PcapWorkerError> {
         while let Some(pkt) = self.ip_rx.recv().await {
             if let Err(e) = self.handle_recv_ip_packet(pkt).await {
@@ -201,74 +207,100 @@ impl EthernetFrameSender {
     }
 
     async fn handle_recv_ip_packet(&mut self, pkt: IPv4Packet) -> Result<(), PcapWorkerError> {
-        // ARP解決
-        // 宛先IPアドレスが直接接続していなくても内部でNext Hopを解決する
-        let target_mac = self.arp_table.get_or_resolve(pkt.dst).await?;
+        let frame = match self.ni.linktype {
+            #[cfg(target_os = "macos")]
+            LinkType::Loopback => {
+                let frame = LoopbackFrame::new(AF_INET as u32, Bytes::from(pkt));
+                Bytes::from(frame)
+            }
+            #[cfg(target_os = "macos")]
+            LinkType::Ethernet => {
+                // ARP解決
+                // 宛先IPアドレスが直接接続していなくても内部でNext Hopを解決する
+                let target_mac = self.arp_table.get_or_resolve(pkt.dst).await?;
 
-        // Ethernetフレームを作成
-        let ethernet_frame = EthernetFrame::new(
-            &self.ni.mac_addr,
-            &target_mac,
-            &EtherType::IPv4,
-            None,
-            Vec::<u8>::from(pkt),
-        );
+                // Ethernetフレームを作成
+                let ethernet_frame = EthernetFrame::new(
+                    &self.ni.mac_addr,
+                    &target_mac,
+                    &EtherType::IPv4,
+                    None,
+                    Bytes::from(pkt),
+                );
+                Bytes::try_from(ethernet_frame)?
+            }
+            LinkType::RawIP => Bytes::from(pkt),
+        };
 
         // フレームを送信
-        let frame_bytes = Bytes::try_from(ethernet_frame)?;
-        self.datalink_tx.send_bytes(&frame_bytes).await?;
+        self.datalink_tx.send_bytes(&frame).await?;
 
         Ok(())
     }
 }
 
-impl EthernetFrameReceiver {
-    async fn listen_ethernet_frames(mut self) -> Result<(), PcapWorkerError> {
+impl DatalinkFrameReceiver {
+    async fn listen_datalink_frames(mut self) -> Result<(), PcapWorkerError> {
         while let Ok(frame) = self.datalink_rx.recv().await {
             // パケット受信時刻を記録
             let received_at = Utc::now();
-            if let Err(e) = self.handle_recv_ethernet_frame(frame, received_at).await {
-                debug!("Failed to handle received Ethernet frame: {e}");
+            if let Err(e) = self.handle_recv_datalink_frame(frame, received_at).await {
+                debug!("Failed to handle received Datalink frame: {e}");
             }
         }
         Ok(())
     }
 
-    async fn handle_recv_ethernet_frame(
+    async fn handle_recv_datalink_frame(
         &mut self,
         frame: impl AsRef<[u8]>,
         received_at: DateTime<Utc>,
     ) -> Result<(), PcapWorkerError> {
-        // Ethernetフレームを解析
-        let ethernet_frame = match EthernetFrame::try_from(frame.as_ref()) {
-            Ok(frame) => frame,
-            Err(e) => {
-                warn!("Failed to parse Ethernet frame: {e}");
-                return Ok(()); // 解析失敗時は無視
+        let payload = match self.ni.linktype {
+            #[cfg(target_os = "macos")]
+            LinkType::Loopback => {
+                // Loopbackフレームを解析
+                let loopback_frame = LoopbackFrame::try_from(frame.as_ref())?;
+                // IPv4パケットのみを処理
+                if loopback_frame.protocol != AF_INET as u32 {
+                    debug!("Loopback protocol is not IPv4: {}", loopback_frame.protocol);
+                    return Ok(()); // IPv4以外は無視
+                }
+
+                loopback_frame.payload
+            }
+            #[cfg(target_os = "macos")]
+            LinkType::Ethernet => {
+                // Ethernetフレームを解析
+                let ethernet_frame = match EthernetFrame::try_from(frame.as_ref()) {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        warn!("Failed to parse Ethernet frame: {e}");
+                        return Ok(()); // 解析失敗時は無視
+                    }
+                };
+                // IPv4パケットのみを処理
+                if ethernet_frame.ether_type != EtherType::IPv4 {
+                    debug!("EtherType is not IPv4: {}", ethernet_frame.ether_type);
+                    return Ok(());
+                }
+
+                ethernet_frame.payload
+            }
+            LinkType::RawIP => {
+                // Raw IPフレームはそのまま使用
+                Bytes::copy_from_slice(frame.as_ref())
             }
         };
-        // IPv4パケットのみを処理
-        if ethernet_frame.ether_type != EtherType::IPv4 {
-            debug!("EtherType is not IPv4: {}", ethernet_frame.ether_type);
-            return Ok(());
-        }
 
         // IPv4パケットを解析
-        let ipv4_packet = match IPv4Packet::try_from(&ethernet_frame.payload) {
+        let ipv4_packet = match IPv4Packet::try_from(&payload) {
             Ok(packet) => packet,
             Err(e) => {
                 warn!("Failed to parse IPv4 packet: {e}");
                 return Ok(()); // 解析失敗は無視
             }
         };
-        // 送信元IPアドレスが自身のIPアドレスと一致するものは除外
-        if self.ni.get_best_source_ip(&ipv4_packet.dst) == Some(ipv4_packet.src) {
-            debug!(
-                "Source IP {} is one of the interface's IPs, ignoring",
-                ipv4_packet.src
-            );
-            return Ok(());
-        }
         // ICMPパケットのみを転送
         if ipv4_packet.protocol != Protocol::ICMP {
             debug!("Protocol is not ICMP: {}", ipv4_packet.protocol);
@@ -312,6 +344,7 @@ mod tests {
 
     use super::*;
     use crate::config::ArpConfig;
+    use crate::net_utils::netlink::LinkType;
 
     // テスト用のモック構造体
     mock! {
@@ -342,6 +375,7 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
             mac_addr,
+            linktype: LinkType::Ethernet,
         }
     }
 
@@ -372,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_ethernet_frame_receiver() {
-        // [正常系] EthernetFrameReceiverの作成
+        // [正常系] DatalinkFrameReceiverの作成
         let ni = create_test_network_interface();
         let mut ip_txs = FxHashMap::default();
         let target_ip = Ipv4Addr::new(192, 168, 1, 1);
@@ -381,7 +415,7 @@ mod tests {
 
         let mock_receiver = Box::new(MockReceiver::new());
 
-        let receiver = EthernetFrameReceiver {
+        let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: mock_receiver,
             ip_txs,
@@ -394,13 +428,13 @@ mod tests {
 
     #[test]
     fn test_ethernet_frame_sender() {
-        // [正常系] EthernetFrameSenderの作成
+        // [正常系] DatalinkFrameSenderの作成
         let ni = create_test_network_interface();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
         let mock_sender = Box::new(MockSender::new());
         let (_tx, rx) = mpsc::channel(100);
 
-        let sender = EthernetFrameSender {
+        let sender = DatalinkFrameSender {
             ni: ni.clone(),
             arp_table: arp_table.clone(),
             datalink_tx: mock_sender,
@@ -422,7 +456,7 @@ mod tests {
 
         let mock_receiver = Box::new(MockReceiver::new());
 
-        let mut receiver = EthernetFrameReceiver {
+        let mut receiver = DatalinkFrameReceiver {
             ni,
             datalink_rx: mock_receiver,
             ip_txs,
@@ -460,7 +494,7 @@ mod tests {
         // テスト実行
         let received_at = chrono::Utc::now();
         let result = receiver
-            .handle_recv_ethernet_frame(frame_bytes, received_at)
+            .handle_recv_datalink_frame(frame_bytes, received_at)
             .await;
         assert_ok!(result);
 
@@ -481,7 +515,7 @@ mod tests {
 
         let arp_frame_bytes = Vec::<u8>::try_from(arp_frame).unwrap();
         let result = receiver
-            .handle_recv_ethernet_frame(arp_frame_bytes, received_at)
+            .handle_recv_datalink_frame(arp_frame_bytes, received_at)
             .await;
         assert_ok!(result);
 
@@ -512,7 +546,7 @@ mod tests {
 
         let tcp_frame_bytes = Vec::<u8>::try_from(tcp_frame).unwrap();
         let result = receiver
-            .handle_recv_ethernet_frame(tcp_frame_bytes, received_at)
+            .handle_recv_datalink_frame(tcp_frame_bytes, received_at)
             .await;
         assert_ok!(result);
 
@@ -544,7 +578,7 @@ mod tests {
 
         let unknown_frame_bytes = Vec::<u8>::try_from(unknown_frame).unwrap();
         let result = receiver
-            .handle_recv_ethernet_frame(unknown_frame_bytes, received_at)
+            .handle_recv_datalink_frame(unknown_frame_bytes, received_at)
             .await;
         // 修正後は未知のIPアドレスからのパケットも全receiverに送信されるためエラーにならない
         assert!(result.is_ok());
@@ -562,7 +596,7 @@ mod tests {
         let mock_receiver = Box::new(MockReceiver::new());
         let (_tx, rx) = mpsc::channel(100);
 
-        let sender = EthernetFrameSender {
+        let sender = DatalinkFrameSender {
             ni: ni.clone(),
             arp_table: arp_table.clone(),
             datalink_tx: mock_sender,
@@ -573,7 +607,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(100);
         ip_txs.insert(targets[0], tx);
 
-        let receiver = EthernetFrameReceiver {
+        let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: mock_receiver,
             ip_txs,
@@ -605,7 +639,7 @@ mod tests {
         let mut mock_sender = MockSender::new();
         mock_sender.expect_send_bytes().returning(|_| Ok(()));
 
-        let sender = EthernetFrameSender {
+        let sender = DatalinkFrameSender {
             ni,
             arp_table,
             datalink_tx: Box::new(mock_sender),
@@ -654,7 +688,7 @@ mod tests {
             .times(1)
             .returning(|_| Ok(()));
 
-        let sender = EthernetFrameSender {
+        let sender = DatalinkFrameSender {
             ni,
             arp_table,
             datalink_tx: Box::new(mock_sender),
@@ -694,14 +728,14 @@ mod tests {
             .times(1)
             .returning(|| Ok(vec![0; 14])); // 最小Ethernetフレームサイズ
 
-        let receiver = EthernetFrameReceiver {
+        let receiver = DatalinkFrameReceiver {
             ni,
             datalink_rx: Box::new(mock_receiver),
             ip_txs,
         };
 
         // 短時間フレーム受信処理を実行
-        let handle = tokio::spawn(receiver.listen_ethernet_frames());
+        let handle = tokio::spawn(receiver.listen_datalink_frames());
         tokio::time::sleep(Duration::from_millis(10)).await;
         handle.abort(); // タスクを中止
         let _ = handle.await; // 結果は無視（中止されるため）

@@ -1,8 +1,8 @@
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{self, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use ratatui::{Frame, widgets};
 
 use crate::tui::models::{AppState, PingResult};
 use crate::tui::table::build_table_rows_data;
@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, app_state: &mut AppState) {
     render_footer(frame, app_state, main_layout[3]);
 }
 
-fn render_header(frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_header(frame: &mut Frame, area: layout::Rect) {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
 
     let title = "Alarmon - Alive and Route Monitoring Tool";
@@ -57,8 +57,8 @@ fn render_header(frame: &mut Frame, area: ratatui::layout::Rect) {
     frame.render_widget(header, area);
 }
 
-fn render_main_content(frame: &mut Frame, app_state: &mut AppState, area: ratatui::layout::Rect) {
-    use ratatui::widgets::Table;
+fn render_main_content(frame: &mut Frame, app_state: &mut AppState, area: layout::Rect) {
+    use widgets::Table;
 
     let content_layout = Layout::default()
         .direction(Direction::Vertical)

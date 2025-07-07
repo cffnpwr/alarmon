@@ -7,6 +7,8 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ip_cidr;
 pub mod ipv4;
+#[cfg(target_os = "macos")]
+pub mod loopback;
 
 trait TryFromBytes {
     type Error;

@@ -3,6 +3,7 @@ mod mac_address;
 mod vlan;
 
 use bytes::{Bytes, BytesMut};
+use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
 pub use self::ether_type::{EtherType, EtherTypeError};
@@ -15,8 +16,8 @@ use crate::TryFromBytes;
 /// Ethernetフレームのパース・検証で発生する可能性のあるエラーを定義します。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EthernetFrameError {
-    #[error("Invalid frame")]
-    InvalidFrame,
+    #[error("Invalid frame length. expected at less than 1514 bytes, but got {0} bytes")]
+    InvalidFrameLength(usize),
     #[error(transparent)]
     InvalidMacAddr(#[from] MacAddrError),
     #[error(transparent)]
@@ -34,7 +35,8 @@ pub enum EthernetFrameError {
 /// - [IEEE 802.3-2018 - Ethernet](https://standards.ieee.org/standard/802_3-2018.html)
 /// - [IANA EtherType Numbers](https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml)
 /// - [IEEE 802.1Q VLAN Tagging](https://standards.ieee.org/standard/802_1Q-2018.html)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
+#[auto_try_from(method = try_from_bytes, error = EthernetFrameError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub struct EthernetFrame {
     pub src: MacAddr,
     pub dst: MacAddr,
@@ -70,7 +72,7 @@ impl TryFromBytes for EthernetFrame {
         // 本来は最小フレームサイズが６４Byteであるが、キャプチャ手段によってはパディングが削られるので最大サイズのみチェックする
         // Jumbo Frameはサポートしない
         if frame_length > 1514 {
-            return Err(EthernetFrameError::InvalidFrame);
+            return Err(EthernetFrameError::InvalidFrameLength(frame_length));
         }
 
         // MACアドレスを取得
@@ -104,27 +106,6 @@ impl TryFromBytes for EthernetFrame {
         })
     }
 }
-impl TryFrom<&[u8]> for EthernetFrame {
-    type Error = EthernetFrameError;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<Vec<u8>> for EthernetFrame {
-    type Error = EthernetFrameError;
-
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
-impl TryFrom<&Vec<u8>> for EthernetFrame {
-    type Error = EthernetFrameError;
-
-    fn try_from(value: &Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from_bytes(value)
-    }
-}
 impl TryFrom<&EthernetFrame> for Bytes {
     type Error = EthernetFrameError;
 
@@ -136,7 +117,7 @@ impl TryFrom<&EthernetFrame> for Bytes {
         };
         let frame_size = value.payload.len() + 14 + vlan_size;
         if frame_size > 1514 {
-            return Err(EthernetFrameError::InvalidFrame);
+            return Err(EthernetFrameError::InvalidFrameLength(frame_size));
         }
 
         let final_frame_size = if frame_size < 60 { 60 } else { frame_size };
@@ -262,7 +243,10 @@ mod tests {
 
         let frame_result = EthernetFrame::try_from(vec![0u8; 1515].as_slice());
         assert!(frame_result.is_err());
-        assert_eq!(frame_result.unwrap_err(), EthernetFrameError::InvalidFrame);
+        assert!(matches!(
+            frame_result.unwrap_err(),
+            EthernetFrameError::InvalidFrameLength(_)
+        ));
 
         // VLANあり
         let vlan_tag =
@@ -356,6 +340,9 @@ mod tests {
         let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, payload.clone());
         let frame_vec: Result<Vec<u8>, _> = frame.try_into();
         assert!(frame_vec.is_err());
-        assert_eq!(frame_vec.unwrap_err(), EthernetFrameError::InvalidFrame);
+        assert!(matches!(
+            frame_vec.unwrap_err(),
+            EthernetFrameError::InvalidFrameLength(_),
+        ));
     }
 }

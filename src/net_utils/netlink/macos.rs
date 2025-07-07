@@ -20,6 +20,12 @@ use super::{LinkType, NetworkInterface, RouteEntry};
 const RTM_MSGHDR_LEN: usize = mem::size_of::<rt_msghdr>();
 const ATTR_LEN: usize = 128;
 
+// インターフェイスのリンクタイプを表す定数
+// 定義: https://github.com/openbsd/src/blob/master/sys/net/if_types.h#
+const IFT_OTHER: u8 = 1;
+const IFT_ETHER: u8 = 6;
+const IFT_LOOP: u8 = 24;
+
 #[inline]
 const fn align(len: usize) -> usize {
     const NLA_ALIGNTO: usize = 4;
@@ -33,31 +39,36 @@ struct rt_msg {
     attrs: [u8; ATTR_LEN],
 }
 
+struct NetworkInterfaceInner {
+    index: u32,
+    name: String,
+    mac_addr: MacAddr,
+    ip_addrs: Vec<IPCIDR>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub(crate) enum NetlinkError {
+pub enum NetlinkError {
     #[error("Failed to get network interfaces: {0}")]
     FailedToGetIfAddrs(#[source] nix::Error),
     #[error("Failed to open socket: {0}")]
     FailedToOpenSocket(io::ErrorKind),
-    // #[error("Unexpected response from PF_ROUTE socket: {0}")]
-    // UnexpectedResponse(u8),
     #[error("PF_ROUTE send error: {0}")]
     PfRouteSendError(io::ErrorKind),
     #[error("PF_ROUTE receive error: {0}")]
     PfRouteReceiveError(io::ErrorKind),
-    // #[error("PF_ROUTE response error: {0}")]
-    // PfRouteResponseError(io::ErrorKind),
     #[error("No such network interface: index = {0}")]
     NoSuchInterfaceIdx(u32),
     #[error(transparent)]
     InvalidNetmask(#[from] IPv4NetmaskError),
+    #[error("Unsupported link type: {0}")]
+    UnsupportedLinkType(u8),
 }
 
-pub(crate) struct Netlink {
+pub struct Netlink {
     pf_route_sock: Socket,
 }
 impl Netlink {
-    pub(crate) fn new() -> Result<Self, NetlinkError> {
+    pub fn new() -> Result<Self, NetlinkError> {
         let pf_route_sock = Socket::new(
             Domain::from(PF_ROUTE),
             Type::from(SOCK_RAW),
@@ -68,20 +79,21 @@ impl Netlink {
         Ok(Netlink { pf_route_sock })
     }
 
-    pub(crate) fn get_interface_from_index(
+    fn get_interface_from_sockaddr_dl(
         &self,
-        index: u32,
-    ) -> Result<NetworkInterface, NetlinkError> {
-        let interfaces = self.get_interfaces()?;
-        interfaces
+        addr: &sockaddr_dl,
+    ) -> Result<NetworkInterfaceInner, NetlinkError> {
+        let index = addr.sdl_index as u32;
+        let ifaces = self.get_interfaces()?;
+        ifaces
             .into_iter()
             .find(|iface| iface.index == index)
             .ok_or(NetlinkError::NoSuchInterfaceIdx(index))
     }
 
-    pub(crate) fn get_interfaces(&self) -> Result<Vec<NetworkInterface>, NetlinkError> {
+    fn get_interfaces(&self) -> Result<Vec<NetworkInterfaceInner>, NetlinkError> {
         let ifaddrs = getifaddrs().map_err(NetlinkError::FailedToGetIfAddrs)?;
-        let mut interfaces: HashMap<String, NetworkInterface> = HashMap::new();
+        let mut interfaces: HashMap<String, NetworkInterfaceInner> = HashMap::new();
 
         for ifaddr in ifaddrs {
             let iface_name = ifaddr.interface_name.clone();
@@ -91,7 +103,8 @@ impl Netlink {
                 let index = if_nametoindex(iface_name.as_str())
                     .map_err(NetlinkError::FailedToGetIfAddrs)
                     .unwrap_or(0);
-                NetworkInterface {
+
+                NetworkInterfaceInner {
                     index,
                     name: iface_name,
                     mac_addr: MacAddr::default(),
@@ -131,7 +144,7 @@ impl Netlink {
     }
 
     /// 特定の宛先IPアドレスに対する最適ルートを取得
-    pub(crate) fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
+    pub fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
         // PF_ROUTEで送信するデータ
         let mut rt_msg = rt_msg {
             hdr: rt_msghdr {
@@ -227,6 +240,7 @@ impl Netlink {
         let rtm_addrs = rt_msg.hdr.rtm_addrs;
         let mut payload = rt_msg.attrs[..len - RTM_MSGHDR_LEN].as_mut();
 
+        let mut linktype = None;
         let mut route_entry = RouteEntry::default();
         for i in 0..RTAX_MAX {
             if (rtm_addrs & (1 << i)) == 0 {
@@ -253,19 +267,35 @@ impl Netlink {
                         // ゲートウェイIPアドレス
                         let gateway = unsafe { *(sa as *const sockaddr as *const sockaddr_in) };
                         let gateway_addr = Ipv4Addr::from(u32::from_be(gateway.sin_addr.s_addr));
-                        route_entry.link_type = LinkType::Ethernet;
                         route_entry.via = Some(IpAddr::V4(gateway_addr));
+                        linktype = Some(LinkType::Ethernet);
                     }
                     AF_LINK => {
-                        route_entry.link_type = LinkType::RawIP;
+                        linktype = Some(LinkType::RawIP);
                     }
                     _ => unimplemented!("Unsupported address family: {}", sa.sa_family),
                 },
                 RTAX_IFP => {
                     let ifp = unsafe { *(sa as *const sockaddr as *const sockaddr_dl) };
-                    let iface_idx = ifp.sdl_index as u32;
-                    let iface = self.get_interface_from_index(iface_idx)?;
-                    route_entry.interface = iface;
+                    let iface = self.get_interface_from_sockaddr_dl(&ifp)?;
+                    // LinkType判別ロジック
+                    let linktype = match (ifp.sdl_type, linktype) {
+                        (IFT_ETHER, _) => LinkType::Ethernet, // sockaddr_dl->sdl_typeがIFT_ETHERの場合
+                        (IFT_LOOP, _) => LinkType::Loopback, // sockaddr_dl->sdl_typeがIFT_LOOPの場合
+                        (IFT_OTHER, Some(LinkType::RawIP)) => LinkType::RawIP, // sockaddr_dl->sdl_typeがIFT_OTHERでLinkTypeがRawIPの場合
+                        _ => {
+                            // その他のリンクタイプはサポートされていない
+                            return Err(NetlinkError::UnsupportedLinkType(ifp.sdl_type));
+                        }
+                    };
+
+                    route_entry.interface = NetworkInterface {
+                        index: iface.index,
+                        name: iface.name,
+                        mac_addr: iface.mac_addr,
+                        linktype,
+                        ip_addrs: iface.ip_addrs,
+                    };
                 }
                 _ => {} // 他のアドレスタイプは無視
             }
@@ -283,23 +313,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_interface_from_index() -> Result<()> {
-        // [正常系] 存在するインデックスでインターフェース取得
+    fn test_get_interface_from_sockaddr_dl() -> Result<()> {
         let netlink = Netlink::new()?;
         let interfaces = netlink.get_interfaces()?;
 
+        // [正常系] 存在するインデックスでインターフェース取得
         if let Some(first_interface) = interfaces.first() {
-            let interface = netlink.get_interface_from_index(first_interface.index)?;
+            let addr = sockaddr_dl {
+                sdl_len: mem::size_of::<sockaddr_dl>() as u8,
+                sdl_family: AF_LINK as u8,
+                sdl_index: first_interface.index as u16,
+                sdl_type: 0,
+                sdl_nlen: 0,
+                sdl_alen: 0,
+                sdl_slen: 0,
+                sdl_data: [0; 12],
+            };
+            let interface = netlink.get_interface_from_sockaddr_dl(&addr)?;
             assert_eq!(interface.index, first_interface.index);
         }
 
         // [異常系] 存在しないインデックスでNoSuchInterfaceIdxエラー
-        let result = netlink.get_interface_from_index(99999);
+        let addr = sockaddr_dl {
+            sdl_len: mem::size_of::<sockaddr_dl>() as u8,
+            sdl_family: AF_LINK as u8,
+            sdl_index: 65535,
+            sdl_type: 0,
+            sdl_nlen: 0,
+            sdl_alen: 0,
+            sdl_slen: 0,
+            sdl_data: [0; 12],
+        };
+        let result = netlink.get_interface_from_sockaddr_dl(&addr);
         assert!(result.is_err());
-        assert!(matches!(
-            result.err(),
-            Some(NetlinkError::NoSuchInterfaceIdx(99999))
-        ));
+        if let Err(e) = result {
+            assert!(matches!(e, NetlinkError::NoSuchInterfaceIdx(65535)));
+        }
 
         Ok(())
     }
@@ -486,7 +535,6 @@ mod tests {
         assert!(result.is_ok());
         let route_entry = result.unwrap();
         assert_eq!(route_entry.to, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)));
-        assert_eq!(route_entry.link_type, LinkType::RawIP);
         assert!(route_entry.via.is_none());
 
         Ok(())

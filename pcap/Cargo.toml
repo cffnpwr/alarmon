@@ -11,10 +11,11 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-libpcap = { package = "pcap", version = "2.2.0", optional = true }
+libpcap = { package = "pcap", version = "2.2.0", features = ["capture-stream"], optional = true }
 cfg-if = "1.0.0"
 nix.workspace = true
 tokio.workspace = true
+tokio-stream = "0.1.17"
 async-trait = "0.1.88"
 
 [features]
