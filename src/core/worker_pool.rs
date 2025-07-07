@@ -2,23 +2,25 @@ use std::sync::Arc;
 
 use fxhash::FxHashMap;
 use thiserror::Error;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::nic_worker::NicWorkerError;
+use super::pcap_worker::PcapWorkerError;
 use super::ping_worker::PingWorkerError;
 use super::traceroute_worker::{TracerouteWorker, TracerouteWorkerError};
 use crate::config::Config;
-use crate::core::nic_worker::{NicWorker, PingTargets};
+use crate::core::pcap_worker::{PcapWorker, PingTargets};
 use crate::core::ping_worker::PingWorker;
 use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::netlink::NetlinkError;
+use crate::tui::models::UpdateMessage;
 
 #[derive(Debug, Error)]
 pub enum WorkerPoolError {
     #[error(transparent)]
     NetworkError(#[from] NetlinkError),
     #[error(transparent)]
-    NicWorkerError(#[from] NicWorkerError),
+    PcapWorkerError(#[from] PcapWorkerError),
     #[error(transparent)]
     PingWorkerError(#[from] PingWorkerError),
     #[error(transparent)]
@@ -28,7 +30,7 @@ pub enum WorkerPoolError {
 }
 
 pub struct WorkerPool {
-    nic_workers: Vec<NicWorker>,
+    pcap_workers: Vec<PcapWorker>,
     ping_workers: Vec<PingWorker>,
     traceroute_workers: Vec<TracerouteWorker>,
 }
@@ -49,30 +51,43 @@ impl WorkerPool {
         arp_table: Arc<ArpTable>,
         cfg: &Config,
         targets: &FxHashMap<u32, PingTargets>,
+        update_sender: Option<mpsc::Sender<UpdateMessage>>,
     ) -> Result<Self, WorkerPoolError> {
-        // Nic Workerの集合
-        let mut nic_workers = Vec::new();
+        // IPアドレスから表示名へのマップを作成
+        let mut target_display_map = FxHashMap::default();
+        for target_config in &cfg.targets {
+            if let Ok(target_ip) = target_config.host.parse::<std::net::Ipv4Addr>() {
+                let display_name = format!("{} ({})", target_config.name, target_config.host);
+                target_display_map.insert(target_ip, display_name);
+            }
+        }
+        // Pcap Workerの集合
+        let mut pcap_workers = Vec::new();
         // Ping Workerの集合
         let mut ping_workers = Vec::new();
         // Traceroute Workerの集合
         let mut traceroute_workers = Vec::new();
 
-        // 各インターフェースに対してNic Workerを起動
+        // 各インターフェースに対してPcap Workerを起動
         for ping_targets in targets.values() {
-            let nic_result = NicWorker::new(
+            let pcap_result = PcapWorker::new(
                 token.clone(),
                 cfg,
                 ping_targets.ni.clone(),
                 arp_table.clone(),
                 ping_targets.targets.clone(),
             )?;
-            nic_workers.push(nic_result.worker);
-            let recv_ip_tx = nic_result.sender;
-            let send_ip_broadcast_rxs = nic_result.receivers;
+            pcap_workers.push(pcap_result.worker);
+            let recv_ip_tx = pcap_result.sender;
+            let send_ip_broadcast_rxs = pcap_result.receivers;
 
             // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
             for ping_target in &ping_targets.targets {
                 let src_addr = Self::get_source_addr_for_target(ping_targets, ping_target)?;
+                let target_display = target_display_map
+                    .get(ping_target)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{ping_target}"));
 
                 // Ping Workerを作成
                 let ping_worker = PingWorker::new(
@@ -85,6 +100,8 @@ impl WorkerPool {
                         .get(ping_target)
                         .unwrap()
                         .resubscribe(),
+                    update_sender.clone(),
+                    target_display.clone(),
                 );
                 ping_workers.push(ping_worker);
 
@@ -101,6 +118,8 @@ impl WorkerPool {
                             .get(ping_target)
                             .unwrap()
                             .resubscribe(),
+                        update_sender.clone(),
+                        target_display.clone(),
                     );
                     traceroute_workers.push(traceroute_worker);
                 }
@@ -109,7 +128,7 @@ impl WorkerPool {
 
         Ok(Self {
             ping_workers,
-            nic_workers,
+            pcap_workers,
             traceroute_workers,
         })
     }
@@ -118,10 +137,10 @@ impl WorkerPool {
         // 全てのワーカーを並行実行
         let mut tasks = Vec::new();
 
-        // Nic Workerの起動
-        for nic_worker in self.nic_workers {
+        // Pcap Workerの起動
+        for pcap_worker in self.pcap_workers {
             tasks.push(tokio::spawn(async move {
-                nic_worker.run().await.map_err(WorkerPoolError::from)
+                pcap_worker.run().await.map_err(WorkerPoolError::from)
             }));
         }
 
@@ -202,11 +221,11 @@ mod tests {
         let config = create_test_config();
         let targets = FxHashMap::default();
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
 
         assert!(result.is_ok());
         let worker_pool = result.unwrap();
-        assert!(worker_pool.nic_workers.is_empty());
+        assert!(worker_pool.pcap_workers.is_empty());
         assert!(worker_pool.ping_workers.is_empty());
     }
 
@@ -225,14 +244,14 @@ mod tests {
         };
         targets.insert(ni.index, ping_targets);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
 
         // 注意: このテストは実際のPcap初期化を試行するため、環境によっては失敗する可能性がある
         // そのため、結果の成功/失敗両方を許容する
         match result {
             Ok(worker_pool) => {
                 // 成功した場合、正しい数のWorkerが作成されていることを確認
-                assert_eq!(worker_pool.nic_workers.len(), 1);
+                assert_eq!(worker_pool.pcap_workers.len(), 1);
                 assert_eq!(worker_pool.ping_workers.len(), 2);
             }
             Err(_) => {
@@ -266,7 +285,7 @@ mod tests {
         };
         targets.insert(1, ping_targets);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
 
         // 注意: このテストも実際のPcap初期化を試行するため、
         // PcapErrorが先に発生する可能性がある
@@ -287,7 +306,8 @@ mod tests {
         let config = create_test_config();
         let targets = FxHashMap::default(); // 空のターゲット
 
-        let worker_pool = WorkerPool::new(token.clone(), arp_table, &config, &targets).unwrap();
+        let worker_pool =
+            WorkerPool::new(token.clone(), arp_table, &config, &targets, None).unwrap();
 
         // 空のワーカープールは即座に完了する
         let result = timeout(Duration::from_millis(100), worker_pool.run()).await;
@@ -329,13 +349,13 @@ mod tests {
         };
         targets.insert(ni2.index, ping_targets2);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets);
+        let result = WorkerPool::new(token, arp_table, &config, &targets, None);
 
         // 環境によってはPcapエラーが発生する可能性があるが、
         // 成功した場合は正しい数のWorkerが作成されることを確認
         match result {
             Ok(worker_pool) => {
-                assert_eq!(worker_pool.nic_workers.len(), 2);
+                assert_eq!(worker_pool.pcap_workers.len(), 2);
                 assert_eq!(worker_pool.ping_workers.len(), 3); // 1+2=3個のPingWorker
             }
             Err(_) => {

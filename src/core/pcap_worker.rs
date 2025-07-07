@@ -18,15 +18,15 @@ use crate::net_utils::arp_table::{ArpTable, ArpTableError};
 use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
 
 #[derive(Debug)]
-pub struct NicWorkerResult {
-    pub worker: NicWorker,
+pub struct PcapWorkerResult {
+    pub worker: PcapWorker,
     pub sender: mpsc::Sender<IPv4Packet>,
     pub receivers: FxHashMap<Ipv4Addr, broadcast::Receiver<IPv4Packet>>,
 }
 
 #[derive(Debug, Error)]
 #[allow(clippy::enum_variant_names)]
-pub enum NicWorkerError {
+pub enum PcapWorkerError {
     #[error(transparent)]
     NetworkError(#[from] NetlinkError),
     #[error(transparent)]
@@ -89,13 +89,13 @@ impl std::fmt::Debug for EthernetFrameSender {
 }
 
 #[derive(Debug)]
-pub struct NicWorker {
+pub struct PcapWorker {
     token: CancellationToken,
     receiver: EthernetFrameReceiver,
     sender: EthernetFrameSender,
 }
 
-impl NicWorker {
+impl PcapWorker {
     /// NIC Workerを作成
     ///
     /// # Arguments
@@ -104,8 +104,8 @@ impl NicWorker {
     /// * `arp_table` - ARPテーブル
     ///
     /// # Returns
-    /// * `Ok((NicWorker, mpsc::Sender<IPv4Packet>, FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>))` - (NIC Worker, NICへの送信用チャネル, 宛先IPアドレスごとのNICからの受信用チャネル)
-    /// * `Err(NicWorkerError)` - エラー
+    /// * `Ok((PcapWorker, mpsc::Sender<IPv4Packet>, FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>))` - (Pcap Worker, NICへの送信用チャネル, 宛先IPアドレスごとのNICからの受信用チャネル)
+    /// * `Err(PcapWorkerError)` - エラー
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         token: CancellationToken,
@@ -113,7 +113,7 @@ impl NicWorker {
         ni: NetworkInterface,
         arp_table: Arc<ArpTable>,
         target_ips: impl AsRef<[Ipv4Addr]>,
-    ) -> Result<NicWorkerResult, NicWorkerError> {
+    ) -> Result<PcapWorkerResult, PcapWorkerError> {
         let cap = PcapNetworkInterface::from(&ni).open(false)?;
         let (sender, receiver) = match cap {
             Channel::Ethernet(s, r) => (s, r),
@@ -149,16 +149,16 @@ impl NicWorker {
             receiver,
             sender,
         };
-        Ok(NicWorkerResult {
+        Ok(PcapWorkerResult {
             worker,
             sender: recv_ip_tx,
             receivers: send_ip_rxs,
         })
     }
 
-    pub async fn run(self) -> Result<(), NicWorkerError> {
+    pub async fn run(self) -> Result<(), PcapWorkerError> {
         let interface_name = self.sender.ni.name.clone();
-        info!("Starting NIC Worker for interface: {interface_name}");
+        info!("Starting Pcap Worker for interface: {interface_name}");
 
         let token = self.token.clone();
         let ip_handle = tokio::spawn(self.sender.listen_ip_packets());
@@ -166,7 +166,7 @@ impl NicWorker {
 
         tokio::select! {
             _ = token.cancelled() => {
-                info!("NIC Worker for interface {interface_name} is stopping");
+                info!("Pcap Worker for interface {interface_name} is stopping");
             }
             _ = ip_handle => {},
             _ = ethernet_handle => {},
@@ -177,7 +177,7 @@ impl NicWorker {
 }
 
 impl EthernetFrameSender {
-    async fn listen_ip_packets(mut self) -> Result<(), NicWorkerError> {
+    async fn listen_ip_packets(mut self) -> Result<(), PcapWorkerError> {
         while let Some(pkt) = self.ip_rx.recv().await {
             if let Err(e) = self.handle_recv_ip_packet(pkt).await {
                 warn!("Failed to handle received IP packet: {e}");
@@ -186,7 +186,7 @@ impl EthernetFrameSender {
         Ok(())
     }
 
-    async fn handle_recv_ip_packet(&mut self, pkt: IPv4Packet) -> Result<(), NicWorkerError> {
+    async fn handle_recv_ip_packet(&mut self, pkt: IPv4Packet) -> Result<(), PcapWorkerError> {
         // ARP解決
         // 宛先IPアドレスが直接接続していなくても内部でNext Hopを解決する
         let target_mac = self.arp_table.get_or_resolve(pkt.dst).await?;
@@ -209,7 +209,7 @@ impl EthernetFrameSender {
 }
 
 impl EthernetFrameReceiver {
-    async fn listen_ethernet_frames(mut self) -> Result<(), NicWorkerError> {
+    async fn listen_ethernet_frames(mut self) -> Result<(), PcapWorkerError> {
         while let Ok(frame) = self.datalink_rx.recv().await {
             if let Err(e) = self.handle_recv_ethernet_frame(frame).await {
                 debug!("Failed to handle received Ethernet frame: {e}");
@@ -221,7 +221,7 @@ impl EthernetFrameReceiver {
     async fn handle_recv_ethernet_frame(
         &mut self,
         frame: impl AsRef<[u8]>,
-    ) -> Result<(), NicWorkerError> {
+    ) -> Result<(), PcapWorkerError> {
         // Ethernetフレームを解析
         let ethernet_frame = match EthernetFrame::try_from(frame.as_ref()) {
             Ok(frame) => frame,
@@ -513,7 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_nic_worker_run() {
-        // [正常系] NicWorkerの実行とキャンセレーション
+        // [正常系] PcapWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
         let ni = create_test_network_interface();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
@@ -540,7 +540,7 @@ mod tests {
             ip_txs,
         };
 
-        let worker = NicWorker {
+        let worker = PcapWorker {
             token: token.clone(),
             receiver,
             sender,

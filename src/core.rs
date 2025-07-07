@@ -3,41 +3,39 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use env_logger::Env;
 use fxhash::FxHashMap;
 use itertools::Itertools;
 use log::{info, warn};
 use tokio::signal::ctrl_c;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::Cli;
 use crate::config::Config;
 use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::netlink::{LinkType, Netlink};
+use crate::tui::models::UpdateMessage;
 
-pub mod nic_worker;
+pub mod pcap_worker;
 pub mod ping_worker;
 pub mod traceroute_worker;
 pub mod worker_pool;
 
-pub use nic_worker::PingTargets;
+pub use pcap_worker::PingTargets;
 pub use worker_pool::WorkerPool;
 
-pub async fn run_ping_monitoring() -> Result<()> {
-    env_logger::init_from_env(Env::default().default_filter_or("info"));
-
-    let cli = Cli::parse();
-    let cfg = Config::load(&cli.config)?;
+pub async fn run_ping_monitoring_with_tui(
+    config: Config,
+    update_sender: mpsc::Sender<UpdateMessage>,
+) -> Result<()> {
+    // TUIモードではenv_loggerを無効化（TUI画面と被らないように）
 
     // 設定から複数のpingターゲットを作成
-    // NICのindexをキー
     let mut ping_targets_by_ni = FxHashMap::<u32, PingTargets>::default();
-    for target_config in &cfg.targets {
+    for target_config in &config.targets {
         let target_ip = Ipv4Addr::from_str(&target_config.host)?;
 
         // LinkTypeを確認（Ethernetのみサポート）
-        // TODO: RawIP, Loopbackのサポート [Issue #17](https://github.com/cffnpwr/alarmon/issues/17)
         let netlink = Netlink::new()?;
         let route = netlink.get_route(target_ip)?;
         if route.link_type == LinkType::RawIP {
@@ -63,10 +61,16 @@ pub async fn run_ping_monitoring() -> Result<()> {
     );
 
     // ARP Tableの初期化
-    let arp_table = Arc::new(ArpTable::new(&cfg.arp));
+    let arp_table = Arc::new(ArpTable::new(&config.arp));
     // Worker Poolを初期化
     let token = CancellationToken::new();
-    let pool = WorkerPool::new(token.clone(), arp_table, &cfg, &ping_targets_by_ni)?;
+    let pool = WorkerPool::new(
+        token.clone(),
+        arp_table,
+        &config,
+        &ping_targets_by_ni,
+        Some(update_sender),
+    )?;
 
     let _ctrl_c_handle = ctrl_c_handler(token.clone());
     let _ = pool.run().await;
