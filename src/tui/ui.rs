@@ -3,7 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::tui::models::AppState;
+use crate::tui::models::{AppState, PingResult};
 use crate::tui::table::build_table_rows_data;
 
 pub fn render(frame: &mut Frame, app_state: &mut AppState) {
@@ -43,22 +43,40 @@ fn render_main_content(frame: &mut Frame, app_state: &mut AppState, area: ratatu
         .split(area);
 
     // Extract data first to avoid borrowing conflicts
-    let ping_results = &app_state.ping_results;
+    let ping_results = app_state.get_ping_results_sorted();
     let selected_index = app_state.selected_index;
     let show_details = app_state.show_details;
-    let traceroute_hops = &app_state.traceroute_hops;
 
-    let rows = build_table_rows_data(ping_results, selected_index, show_details, traceroute_hops);
+    // 選択されたターゲットのTraceroute結果を取得
+    let selected_target = if selected_index < app_state.targets.len() {
+        &app_state.targets[selected_index]
+    } else {
+        ""
+    };
+    let traceroute_hops = app_state.get_traceroute_hops(selected_target);
+
+    let ping_results_slice: Vec<PingResult> = ping_results.into_iter().cloned().collect();
+
+    // チャート幅を画面幅の30%として計算（最小20文字）
+    let chart_width = ((area.width as f32 * 0.30) as usize).max(20);
+
+    let rows = build_table_rows_data(
+        &ping_results_slice,
+        selected_index,
+        show_details,
+        &traceroute_hops,
+        chart_width,
+    );
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(30), // Name column
-            Constraint::Length(20), // Host column
-            Constraint::Length(8),  // Loss column
-            Constraint::Length(10), // Latency column
-            Constraint::Length(10), // Avg column
-            Constraint::Min(20),    // Chart column
+            Constraint::Percentage(35), // Name column - 可変幅でフル表示
+            Constraint::Percentage(15), // Host column
+            Constraint::Length(6),      // Loss column - 最小固定
+            Constraint::Length(8),      // Latency column - 最小固定
+            Constraint::Length(8),      // Avg column - 最小固定
+            Constraint::Percentage(30), // Chart column - 可変幅で拡張
         ],
     )
     .block(Block::default())
