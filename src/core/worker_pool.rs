@@ -171,7 +171,7 @@ mod tests {
     use super::*;
     use crate::config::{ArpConfig, Config, TracerouteConfig};
     use crate::net_utils::arp_table::ArpTable;
-    use crate::net_utils::netlink::NetworkInterface;
+    use crate::net_utils::netlink::{LinkType, NetworkInterface};
 
     fn create_test_config() -> Config {
         Config {
@@ -197,6 +197,7 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
             mac_addr,
+            linktype: LinkType::Ethernet,
         }
     }
 
@@ -282,6 +283,7 @@ mod tests {
             name: "eth0".to_string(),
             ip_addrs: vec![], // IPアドレスなし
             mac_addr,
+            linktype: LinkType::Ethernet,
         };
 
         let ping_targets = PingTargets {
@@ -355,6 +357,7 @@ mod tests {
             name: "eth1".to_string(),
             ip_addrs: vec![IPCIDR::V4(ipv4_cidr2)],
             mac_addr: mac_addr2,
+            linktype: LinkType::Ethernet,
         };
         let ping_targets2 = PingTargets {
             ni: ni2.clone(),

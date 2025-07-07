@@ -2,11 +2,24 @@ use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use libpcap::{Active, Capture, Device};
+use libpcap::{Active, Capture, Device, PacketCodec, PacketStream};
 use nix::net::if_::if_nametoindex;
 use thiserror::Error;
+use tokio_stream::StreamExt;
 
 use super::{DataLinkReceiver, DataLinkSender, Pcap};
+use crate::Channel;
+
+/// PacketCodec implementation for converting packets to byte arrays
+pub struct BoxCodec;
+
+impl PacketCodec for BoxCodec {
+    type Item = Box<[u8]>;
+
+    fn decode(&mut self, packet: libpcap::Packet) -> Self::Item {
+        packet.data.into()
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Error)]
 pub struct PcapError {
@@ -67,24 +80,22 @@ impl DataLinkSender for LibpcapDataLinkSender {
     }
 }
 
-#[derive(Clone)]
 pub struct LibpcapDataLinkReceiver {
-    capture: Arc<Mutex<Capture<Active>>>,
+    stream: PacketStream<Active, BoxCodec>,
 }
+
+// PacketStreamはCloneできないため、LibpcapDataLinkReceiverもClone不可
 #[async_trait]
 impl DataLinkReceiver for LibpcapDataLinkReceiver {
     async fn recv(&mut self) -> Result<Vec<u8>, PcapError> {
-        let capture = self.capture.clone();
-        tokio::task::spawn_blocking(move || {
-            capture
-                .lock()
-                .expect("failed to lock capture")
-                .next_packet()
-                .map_err(PcapError::from)
-                .map(|packet| packet.data.to_vec())
-        })
-        .await
-        .expect("spawn_blocking failed")
+        // Get next packet from stream
+        match self.stream.next().await {
+            Some(packet_data) => match packet_data {
+                Ok(data) => Ok(data.to_vec()),
+                Err(e) => Err(PcapError::from(e)),
+            },
+            None => Err(PcapError::from(libpcap::Error::NoMorePackets)),
+        }
     }
 }
 pub struct NetworkInterface {
@@ -136,16 +147,28 @@ impl Pcap for NetworkInterface {
             .immediate_mode(true)
             .promisc(promisc)
             .open()
+            .map_err(PcapError::from)?
+            .setnonblock()
             .map_err(PcapError::from)?;
-        let capture = Arc::new(Mutex::new(capture));
 
-        Ok(super::Channel::Ethernet(
-            Box::new(LibpcapDataLinkSender {
-                capture: capture.clone(),
+        // Create stream for receiver
+        let stream = capture.stream(BoxCodec).map_err(PcapError::from)?;
+
+        // Create a new capture for sender (we need separate instances)
+        let sender_capture = Capture::from_device(self.name().as_str())
+            .map_err(PcapError::from)?
+            .immediate_mode(true)
+            .promisc(promisc)
+            .open()
+            .map_err(PcapError::from)?;
+
+        let chan = Channel {
+            sender: Box::new(LibpcapDataLinkSender {
+                capture: Arc::new(Mutex::new(sender_capture)),
             }),
-            Box::new(LibpcapDataLinkReceiver {
-                capture: capture.clone(),
-            }),
-        ))
+            receiver: Box::new(LibpcapDataLinkReceiver { stream }),
+        };
+
+        Ok(chan)
     }
 }

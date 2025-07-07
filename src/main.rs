@@ -1,5 +1,10 @@
 use color_eyre::Result;
+use config::Config;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tui::models::UpdateMessage;
+
+use crate::cli::Cli;
 
 mod cli;
 mod config;
@@ -7,24 +12,16 @@ mod core;
 mod net_utils;
 mod tui;
 
-use config::Config;
-use tokio_util::sync::CancellationToken;
-use tui::models::UpdateMessage;
-
-use crate::cli::Cli;
-
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(debug_assertions)]
+    console_subscriber::init();
     color_eyre::install()?;
 
     let cli = Cli::parse();
     let config = Config::load(&cli.config)?;
 
-    let targets: Vec<String> = config
-        .targets
-        .iter()
-        .map(|t| format!("{} ({})", t.name, t.host))
-        .collect();
+    let targets: Vec<String> = config.targets.iter().map(|t| t.name.to_string()).collect();
 
     // UpdateMessage用のチャネルを作成
     let (update_sender, update_receiver) = mpsc::channel::<UpdateMessage>(1000);

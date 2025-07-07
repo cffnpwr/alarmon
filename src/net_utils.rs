@@ -1,2 +1,2 @@
-pub(crate) mod arp_table;
-pub(crate) mod netlink;
+pub mod arp_table;
+pub mod netlink;
