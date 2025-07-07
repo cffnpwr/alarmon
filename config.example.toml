@@ -4,6 +4,9 @@ targets = [
   # { name = "loopback", host = "127.0.0.1" },
   { name = "Cloudflare Primary DNS", host = "1.1.1.1" },
   { name = "Cloudflare Secondary DNS", host = "1.0.0.1" },
+  { name = "Google Primary DNS", host = "8.8.8.8" },
+  { name = "Google Secondary DNS", host = "8.8.4.4" },
+  { name = "invalid", host = "123.45.67.89" },
 ]
 # 監視間隔（秒）
 interval = 1
