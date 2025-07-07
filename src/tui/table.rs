@@ -88,7 +88,7 @@ pub fn build_table_rows_data(
             } else if rounded == rounded.trunc() {
                 format!("{}%", rounded as i32)
             } else {
-                format!("{:.2}%", rounded)
+                format!("{rounded:.2}%")
                     .trim_end_matches('0')
                     .trim_end_matches('.')
                     .to_string()
@@ -164,7 +164,7 @@ pub fn build_table_rows_data(
                     match (hop.address, hop.latency) {
                         (Some(addr), Some(rtt)) => {
                             let rtt_ms = rtt.num_milliseconds();
-                            let avg_text = format!("{}ms", rtt_ms);
+                            let avg_text = format!("{rtt_ms}ms");
 
                             // Tracerouteのsparklineを作成
                             let hop_chart = if !hop.latency_history.is_empty() {

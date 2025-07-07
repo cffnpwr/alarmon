@@ -28,7 +28,7 @@ fn render_header(frame: &mut Frame, area: ratatui::layout::Rect) {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
 
     let title = "Alarmon - Alive and Route Monitoring Tool";
-    let version_text = format!("v{}", VERSION);
+    let version_text = format!("v{VERSION}");
 
     // Calculate padding for center alignment
     let total_width = area.width as usize;

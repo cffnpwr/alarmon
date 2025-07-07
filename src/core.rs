@@ -67,7 +67,7 @@ pub async fn run_ping_monitoring(
     let pool = WorkerPool::new(
         token.clone(),
         arp_table,
-        &config,
+        config,
         &ping_targets_by_ni,
         update_sender,
     )?;
