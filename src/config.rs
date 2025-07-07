@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use chrono::Duration;
+use rand::Rng;
 use serde::Deserialize;
 use serde_with::{DurationSeconds, serde_as};
 use thiserror::Error;
@@ -15,12 +16,16 @@ pub(crate) enum ConfigError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct Target {
+pub struct Target {
+    /// 監視対象のID
+    #[serde(default)]
+    pub id: u16,
+
     /// 対象の表示名
-    pub(crate) name: String,
+    pub name: String,
 
     /// 対象のホスト名またはIPアドレス
-    pub(crate) host: String,
+    pub host: String,
 }
 
 #[serde_as]
@@ -88,34 +93,34 @@ impl Default for TracerouteConfig {
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct Config {
+pub struct Config {
     /// 監視対象のリスト
-    pub(crate) targets: Vec<Target>,
+    pub targets: Vec<Target>,
 
     /// ICMP Echoの送信間隔(秒)
     /// デフォルトは1秒
     #[serde_as(as = "DurationSeconds<i64>")]
     #[serde(default = "Config::default_interval")]
-    pub(crate) interval: Duration,
+    pub interval: Duration,
 
     /// ICMP Echoのタイムアウト(秒)
     /// デフォルトは5秒
     #[serde_as(as = "DurationSeconds<i64>")]
     #[serde(default = "Config::default_timeout")]
-    pub(crate) timeout: Duration,
+    pub timeout: Duration,
 
     /// 受信パケットを保持するためのバッファのサイズ
     /// デフォルトは1000パケット
     #[serde(default = "Config::default_buffer_size")]
-    pub(crate) buffer_size: usize,
+    pub buffer_size: usize,
 
     /// ARP設定
     #[serde(default)]
-    pub(crate) arp: ArpConfig,
+    pub arp: ArpConfig,
 
     /// Traceroute設定
     #[serde(default)]
-    pub(crate) traceroute: TracerouteConfig,
+    pub traceroute: TracerouteConfig,
 }
 
 impl Default for Config {
@@ -131,11 +136,23 @@ impl Default for Config {
     }
 }
 impl Config {
-    pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let content = fs::read_to_string(path)
             .map_err(|e| ConfigError::LoadFileError(path.to_path_buf(), e.kind()))?;
-        toml::from_str(&content).map_err(ConfigError::TomlParseError)
+        let mut cfg: Self = toml::from_str(&content).map_err(ConfigError::TomlParseError)?;
+
+        // IDを上書きする
+        let mut rng = rand::rng();
+        let start = rng.random::<u16>();
+        for (i, target) in cfg.targets.iter_mut().enumerate() {
+            if target.id == 0 {
+                // IDが未設定の場合はランダムな値を設定
+                target.id = start + i as u16;
+            }
+        }
+
+        Ok(cfg)
     }
 
     /// デフォルトのICMP Echo送信間隔
