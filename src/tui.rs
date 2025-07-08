@@ -14,12 +14,11 @@ use ui::render;
 
 pub async fn run_tui(
     token: CancellationToken,
-    targets: Vec<String>,
     update_receiver: mpsc::Receiver<UpdateMessage>,
     config: &crate::config::Config,
 ) -> Result<()> {
     let terminal = ratatui::init();
-    let result = run(token, terminal, targets, update_receiver, config).await;
+    let result = run(token, terminal, update_receiver, config).await;
     ratatui::restore();
     result
 }
@@ -27,13 +26,12 @@ pub async fn run_tui(
 async fn run(
     token: CancellationToken,
     mut terminal: DefaultTerminal,
-    targets: Vec<String>,
     mut update_receiver: mpsc::Receiver<UpdateMessage>,
     config: &crate::config::Config,
 ) -> Result<()> {
     let mut events = EventHandler::new();
     let event_sender = events.get_sender();
-    let mut app_state = AppState::new(targets, config);
+    let mut app_state = AppState::new(config);
 
     loop {
         tokio::select! {

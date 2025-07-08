@@ -21,8 +21,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(&cli.config)?;
 
-    let targets: Vec<String> = config.targets.iter().map(|t| t.name.to_string()).collect();
-
     // UpdateMessage用のチャネルを作成
     let (update_sender, update_receiver) = mpsc::channel::<UpdateMessage>(1000);
     let token = CancellationToken::new();
@@ -42,8 +40,7 @@ async fn main() -> Result<()> {
 
     // TUIタスクを起動
     let tui_handle = tokio::spawn(async move {
-        if let Err(e) = tui::run_tui(token.clone(), targets, update_receiver, &config_for_tui).await
-        {
+        if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
             eprintln!("TUIでエラーが発生しました: {e}");
         }
     });

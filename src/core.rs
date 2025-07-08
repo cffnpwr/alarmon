@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use fxhash::FxHashMap;
-use itertools::Itertools;
 use log::info;
 use pcap_worker::{PingTarget, PingTargets};
 use tokio::sync::mpsc;
@@ -47,14 +46,14 @@ pub async fn run_ping_monitoring(
             host: target_ip,
         });
     }
-    info!(
-        "ping targets: [{}]",
-        ping_targets_by_ni
-            .values()
-            .flat_map(|t| t.targets.clone())
-            .map(|target| target.host.to_string())
-            .join(", ")
-    );
+
+    // 設定ファイルの順序を保持してターゲットを表示
+    let ordered_targets: Vec<String> = config
+        .targets
+        .iter()
+        .map(|target| target.host.clone())
+        .collect();
+    info!("ping targets: [{}]", ordered_targets.join(", "));
 
     // ARP Tableの初期化
     let arp_table = Arc::new(ArpTable::new(&config.arp));
