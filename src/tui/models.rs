@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use chrono::Duration;
 use crossterm::event;
+use fxhash::FxHashMap;
 use ratatui::widgets::TableState;
 
 use crate::config::{Config, Target};
@@ -82,10 +82,10 @@ pub enum PingStatus {
 }
 
 pub struct AppState {
-    pub ping_results: HashMap<String, PingResult>,
+    pub ping_results: FxHashMap<String, PingResult>,
     pub targets: Vec<String>,
     pub selected_index: usize,
-    pub traceroute_results: HashMap<String, Vec<TracerouteHopHistory>>,
+    pub traceroute_results: FxHashMap<String, Vec<TracerouteHopHistory>>,
     pub show_details: bool,
     pub table_state: TableState,
     /// ConfigのTargetsへの参照（IDマッチング用）
@@ -94,7 +94,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(targets: Vec<String>, config: &Config) -> Self {
-        let mut ping_results = HashMap::new();
+        let mut ping_results = FxHashMap::default();
 
         for target in &targets {
             ping_results.insert(
@@ -123,7 +123,7 @@ impl AppState {
             ping_results,
             targets,
             selected_index: 0,
-            traceroute_results: HashMap::new(),
+            traceroute_results: FxHashMap::default(),
             show_details: false,
             table_state,
             target_configs: config.targets.clone(),
