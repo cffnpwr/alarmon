@@ -395,8 +395,6 @@ mod tests {
     #[test]
     fn test_traceroute_id_calculation() {
         // [正常系] TracerouteのID計算の一貫性確認
-        let token = CancellationToken::new();
-        let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
         let mut config = create_test_config();
         config.traceroute.enable = true;
         let mut targets = FxHashMap::default();
@@ -421,7 +419,6 @@ mod tests {
             ],
         };
         targets.insert(ni.index, ping_targets);
-        let (update_tx, _update_rx) = mpsc::channel::<UpdateMessage>(100);
 
         // 全体のターゲット数を計算（実際の実装と同じロジック）
         let total_target_count = targets.values().map(|pt| pt.targets.len()).sum::<usize>() as u16;
@@ -431,7 +428,7 @@ mod tests {
         // ping_id=1のTracerouteIDは1+3=4
         // ping_id=2のTracerouteIDは2+3=5
         // ping_id=3のTracerouteIDは3+3=6
-        let expected_traceroute_ids = vec![4, 5, 6];
+        let expected_traceroute_ids = [4, 5, 6];
 
         // TUI側の逆算ロジックでも正しく元のping_idが取得できることを確認
         for (i, &expected_id) in expected_traceroute_ids.iter().enumerate() {
