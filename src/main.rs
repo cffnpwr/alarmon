@@ -14,7 +14,7 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "tokio-console"))]
     console_subscriber::init();
     color_eyre::install()?;
 
