@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr};
 use std::{io, mem, process, slice};
 
+use fxhash::FxHashMap;
 use libc::{
     AF_INET, AF_LINK, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTA_IFP, RTAX_DST, RTAX_GATEWAY, RTAX_IFP,
     RTAX_MAX, RTF_GATEWAY, RTF_HOST, RTF_STATIC, RTF_UP, RTM_GET, RTM_VERSION, SOCK_RAW, c_int,
@@ -93,7 +93,7 @@ impl Netlink {
 
     fn get_interfaces(&self) -> Result<Vec<NetworkInterfaceInner>, NetlinkError> {
         let ifaddrs = getifaddrs().map_err(NetlinkError::FailedToGetIfAddrs)?;
-        let mut interfaces: HashMap<String, NetworkInterfaceInner> = HashMap::new();
+        let mut interfaces: FxHashMap<String, NetworkInterfaceInner> = FxHashMap::default();
 
         for ifaddr in ifaddrs {
             let iface_name = ifaddr.interface_name.clone();
