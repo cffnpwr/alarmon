@@ -93,15 +93,16 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(targets: Vec<String>, config: &Config) -> Self {
+    pub fn new(config: &Config) -> Self {
         let mut ping_results = FxHashMap::default();
+        let targets: Vec<String> = config.targets.iter().map(|t| t.host.clone()).collect();
 
-        for target in &targets {
+        for target_config in &config.targets {
             ping_results.insert(
-                target.clone(),
+                target_config.host.clone(),
                 PingResult {
-                    target: target.clone(),
-                    host: target.clone(),
+                    target: target_config.name.clone(),
+                    host: target_config.host.clone(),
                     status: PingStatus::Success,
                     response_time: None,
                     last_updated: Instant::now(),
@@ -115,7 +116,7 @@ impl AppState {
         }
 
         let mut table_state = TableState::default();
-        if !targets.is_empty() {
+        if !config.targets.is_empty() {
             table_state.select(Some(0));
         }
 
@@ -136,13 +137,7 @@ impl AppState {
             .target_configs
             .iter()
             .find(|config_target| config_target.id == update.id)
-            .and_then(|config_target| {
-                // Configから対応するターゲット文字列を見つける
-                self.targets
-                    .iter()
-                    .find(|target| target.contains(&config_target.name))
-                    .cloned()
-            });
+            .map(|config_target| config_target.host.clone());
 
         if let Some(target) = target_key {
             if let Some(result) = self.ping_results.get_mut(&target) {
@@ -201,11 +196,11 @@ impl AppState {
     }
 
     pub fn update_traceroute_result(&mut self, update: TracerouteUpdate) {
-        // TracerouteのIDはping_target.id + ping_target_lenで計算されている
+        // TracerouteのIDはping_target.id + total_target_countで計算されている
         // 元のping_target.idを逆算する
-        let ping_target_len = self.target_configs.len() as u16;
-        let original_ping_id = if update.id >= ping_target_len {
-            update.id - ping_target_len
+        let total_target_count = self.target_configs.len() as u16;
+        let original_ping_id = if update.id >= total_target_count {
+            update.id - total_target_count
         } else {
             update.id
         };
@@ -214,13 +209,7 @@ impl AppState {
             .target_configs
             .iter()
             .find(|config_target| config_target.id == original_ping_id)
-            .and_then(|config_target| {
-                // Configから対応するターゲット文字列を見つける
-                self.targets
-                    .iter()
-                    .find(|target| target.contains(&config_target.name))
-                    .cloned()
-            });
+            .map(|config_target| config_target.host.clone());
 
         if let Some(target) = target_key {
             // 既存のhopデータと新しいhopデータをマージして履歴を更新
@@ -305,13 +294,11 @@ impl AppState {
     }
 
     pub fn get_ping_results_sorted(&self) -> Vec<&PingResult> {
-        let mut results: Vec<&PingResult> = self
-            .targets
+        // 設定ファイルの順序を保持するため、target_configsの順序に従って結果を返す
+        self.target_configs
             .iter()
-            .filter_map(|target| self.ping_results.get(target))
-            .collect();
-        results.sort_by(|a, b| a.target.cmp(&b.target));
-        results
+            .filter_map(|config| self.ping_results.get(&config.host))
+            .collect()
     }
 
     pub fn move_up(&mut self) {
@@ -322,7 +309,7 @@ impl AppState {
     }
 
     pub fn move_down(&mut self) {
-        if self.selected_index < self.targets.len().saturating_sub(1) {
+        if self.selected_index < self.target_configs.len().saturating_sub(1) {
             self.selected_index += 1;
             self.table_state.select(Some(self.selected_index));
         }
@@ -330,5 +317,108 @@ impl AppState {
 
     pub fn toggle_details(&mut self) {
         self.show_details = !self.show_details;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Target;
+
+    #[test]
+    fn test_get_ping_results_sorted_preserves_order() {
+        use std::time::Instant;
+
+        use chrono::Duration;
+
+        use crate::config::Config;
+
+        // [正常系] 設定ファイルの順序が保持されることを確認
+        let config = Config {
+            targets: vec![
+                Target {
+                    id: 1,
+                    name: "DNS1".to_string(),
+                    host: "8.8.8.8".to_string(),
+                },
+                Target {
+                    id: 2,
+                    name: "Router".to_string(),
+                    host: "192.168.1.1".to_string(),
+                },
+                Target {
+                    id: 3,
+                    name: "DNS2".to_string(),
+                    host: "1.1.1.1".to_string(),
+                },
+            ],
+            ..Config::default()
+        };
+
+        let mut app_state = AppState::new(&config);
+        let now = Instant::now();
+
+        // Ping結果を追加（順序と異なる順番で追加）
+        app_state.ping_results.insert(
+            "1.1.1.1".to_string(),
+            PingResult {
+                target: "1.1.1.1".to_string(),
+                host: "1.1.1.1".to_string(),
+                status: PingStatus::Success,
+                response_time: Some(Duration::milliseconds(10)),
+                last_updated: now,
+                packet_loss: 0.0,
+                avg_response_time: Some(Duration::milliseconds(10)),
+                total_sent: 1,
+                total_received: 1,
+                latency_history: vec![10.0],
+            },
+        );
+
+        app_state.ping_results.insert(
+            "192.168.1.1".to_string(),
+            PingResult {
+                target: "192.168.1.1".to_string(),
+                host: "192.168.1.1".to_string(),
+                status: PingStatus::Success,
+                response_time: Some(Duration::milliseconds(5)),
+                last_updated: now,
+                packet_loss: 0.0,
+                avg_response_time: Some(Duration::milliseconds(5)),
+                total_sent: 1,
+                total_received: 1,
+                latency_history: vec![5.0],
+            },
+        );
+
+        app_state.ping_results.insert(
+            "8.8.8.8".to_string(),
+            PingResult {
+                target: "8.8.8.8".to_string(),
+                host: "8.8.8.8".to_string(),
+                status: PingStatus::Success,
+                response_time: Some(Duration::milliseconds(20)),
+                last_updated: now,
+                packet_loss: 0.0,
+                avg_response_time: Some(Duration::milliseconds(20)),
+                total_sent: 1,
+                total_received: 1,
+                latency_history: vec![20.0],
+            },
+        );
+
+        // 結果を取得
+        let results = app_state.get_ping_results_sorted();
+
+        // 設定ファイルの順序（8.8.8.8, 192.168.1.1, 1.1.1.1）が保持されていることを確認
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].target, "8.8.8.8");
+        assert_eq!(results[1].target, "192.168.1.1");
+        assert_eq!(results[2].target, "1.1.1.1");
+
+        // レスポンス時間も正しく設定されていることを確認
+        assert_eq!(results[0].response_time.unwrap().num_milliseconds(), 20);
+        assert_eq!(results[1].response_time.unwrap().num_milliseconds(), 5);
+        assert_eq!(results[2].response_time.unwrap().num_milliseconds(), 10);
     }
 }

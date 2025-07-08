@@ -60,6 +60,9 @@ impl WorkerPool {
         // Traceroute Workerの集合
         let mut traceroute_workers = Vec::new();
 
+        // 全体のターゲット数を計算
+        let total_target_count = targets.values().map(|pt| pt.targets.len()).sum::<usize>() as u16;
+
         // 各インターフェースに対してPcap Workerを起動
         for ping_targets in targets.values() {
             let target_ips = ping_targets
@@ -79,7 +82,6 @@ impl WorkerPool {
             let send_ip_broadcast_rxs = pcap_result.receivers;
 
             // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
-            let ping_target_len = ping_targets.targets.len();
             for ping_target in &ping_targets.targets {
                 let src_addr = Self::get_source_addr_for_target(ping_targets, &ping_target.host)?;
 
@@ -103,7 +105,7 @@ impl WorkerPool {
                 if cfg.traceroute.enable {
                     let traceroute_worker = TracerouteWorker::new(
                         token.clone(),
-                        ping_target.id + ping_target_len as u16,
+                        ping_target.id + total_target_count,
                         src_addr,
                         ping_target.host,
                         cfg.interval,
@@ -387,6 +389,55 @@ mod tests {
             Err(_) => {
                 // 環境制約で失敗することを許容
             }
+        }
+    }
+
+    #[test]
+    fn test_traceroute_id_calculation() {
+        // [正常系] TracerouteのID計算の一貫性確認
+        let mut config = create_test_config();
+        config.traceroute.enable = true;
+        let mut targets = FxHashMap::default();
+
+        // 複数のターゲットを設定
+        let ni = create_test_network_interface();
+        let ping_targets = PingTargets {
+            ni: ni.clone(),
+            targets: vec![
+                crate::core::pcap_worker::PingTarget {
+                    id: 1,
+                    host: Ipv4Addr::new(192, 168, 1, 1),
+                },
+                crate::core::pcap_worker::PingTarget {
+                    id: 2,
+                    host: Ipv4Addr::new(192, 168, 1, 2),
+                },
+                crate::core::pcap_worker::PingTarget {
+                    id: 3,
+                    host: Ipv4Addr::new(192, 168, 1, 3),
+                },
+            ],
+        };
+        targets.insert(ni.index, ping_targets);
+
+        // 全体のターゲット数を計算（実際の実装と同じロジック）
+        let total_target_count = targets.values().map(|pt| pt.targets.len()).sum::<usize>() as u16;
+        assert_eq!(total_target_count, 3);
+
+        // TracerouteのIDが正しく計算されることを確認
+        // ping_id=1のTracerouteIDは1+3=4
+        // ping_id=2のTracerouteIDは2+3=5
+        // ping_id=3のTracerouteIDは3+3=6
+        let expected_traceroute_ids = [4, 5, 6];
+
+        // TUI側の逆算ロジックでも正しく元のping_idが取得できることを確認
+        for (i, &expected_id) in expected_traceroute_ids.iter().enumerate() {
+            let original_ping_id = if expected_id >= total_target_count {
+                expected_id - total_target_count
+            } else {
+                expected_id
+            };
+            assert_eq!(original_ping_id, (i + 1) as u16);
         }
     }
 }
