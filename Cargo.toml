@@ -11,7 +11,7 @@ rust-version.workspace = true
 
 [workspace]
 resolver = "3"
-members = ["pcap", "tcpip"]
+members = ["pcap", "tcpip", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
