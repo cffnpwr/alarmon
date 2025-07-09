@@ -17,19 +17,19 @@ NC='\033[0m' # No Color
 
 # ログ関数
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 # 使用方法を表示
@@ -58,7 +58,10 @@ get_pr_info() {
     log_info "PR #${pr_number} の情報を取得中..."
     
     # gh CLIを使用してPRの情報を取得
-    gh pr view "$pr_number" --json title,body,labels,author,createdAt,mergedAt
+    gh pr view "$pr_number" --json title,body,labels,author,createdAt,mergedAt 2>/dev/null || {
+        log_error "PR #${pr_number} の情報を取得できませんでした"
+        return 1
+    }
 }
 
 # PRの本文からリリースノートを抽出
@@ -205,10 +208,16 @@ collect_multiple_prs() {
         
         log_info "PR #${pr_number} を処理中..."
         
-        local pr_info=$(get_pr_info "$pr_number")
-        local pr_body=$(echo "$pr_info" | jq -r '.body')
+        local pr_info
+        if ! pr_info=$(get_pr_info "$pr_number"); then
+            log_warn "PR #${pr_number} の情報を取得できませんでした"
+            continue
+        fi
         
-        if [ -z "$pr_body" ] || [ "$pr_body" = "null" ]; then
+        local pr_body
+        pr_body=$(echo "$pr_info" | jq -r '.body // empty')
+        
+        if [ -z "$pr_body" ]; then
             log_warn "PR #${pr_number} の本文が空です"
             continue
         fi
@@ -265,10 +274,15 @@ main() {
     fi
     
     # PRの情報を取得
-    local pr_info=$(get_pr_info "$pr_number")
-    local pr_body=$(echo "$pr_info" | jq -r '.body')
+    local pr_info
+    if ! pr_info=$(get_pr_info "$pr_number"); then
+        return 1
+    fi
     
-    if [ -z "$pr_body" ] || [ "$pr_body" = "null" ]; then
+    local pr_body
+    pr_body=$(echo "$pr_info" | jq -r '.body // empty')
+    
+    if [ -z "$pr_body" ]; then
         log_error "PR #${pr_number} の本文が空です"
         return 1
     fi
