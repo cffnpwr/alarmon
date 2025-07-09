@@ -107,38 +107,18 @@ jobs:
         # バージョン更新とタグ作成
         ./scripts/update-versions.sh
 
-    - name: Push changes and tags
+    - name: Push changes and merge to release branch
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 変更をプッシュ
+        # 変更をmainブランチにプッシュ
+        git push origin main
+        
+        # releaseブランチにマージ
+        git checkout release
+        git merge main --ff-only
         git push origin release
 
-        # タグをプッシュ
+        # タグをプッシュ（これによりreleaseワークフローがトリガーされる）
         git push origin --tags
-
-  version-preview:
-    name: Version Preview
-    runs-on: ubuntu-latest
-    needs: prepare-release
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Comment version preview
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        PR_NUMBER=${{ github.event.pull_request.number }}
-
-        # バージョン計算結果を読み込み
-        CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
-
-        if [ -n "$CALCULATION_DATA" ]; then
-          echo "## バージョンプレビュー" > comment.md
-          echo "" >> comment.md
-          echo "$CALCULATION_DATA" | jq -r '.[] | "- **\(.crate)**: \(.current_version) → \(.new_version) (\(.version_type))"' >> comment.md
-
-          gh pr comment $PR_NUMBER --body-file comment.md
-        fi
 
