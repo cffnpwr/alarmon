@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-alarmon is a Rust implementation network monitoring tool based on the [deadman](https://github.com/upa/deadman) concept. The project is structured as a Cargo workspace with three main components:
+alarmon is a Rust implementation of a TUI-based network monitoring tool based on the [deadman](https://github.com/upa/deadman) concept. The project is structured as a Cargo workspace with three main components:
 
-- **Main binary (`alarmon`)**: The primary application that captures and processes network packets
+- **Main binary (`alarmon`)**: TUI-based network monitoring application with real-time ping and traceroute monitoring
 - **`pcap` crate**: Cross-platform packet capture library with libpcap backend support
 - **`tcpip` crate**: TCP/IP packet parsing library for Ethernet, IPv4, ARP, and ICMP protocols
 
@@ -16,17 +16,21 @@ alarmon is a Rust implementation network monitoring tool based on the [deadman](
 The project uses Cargo workspace configuration with shared dependencies (anyhow, thiserror) and consistent package metadata across all crates.
 
 ### Key Components
+- **TUI Interface**: Real-time monitoring display using `ratatui` and `crossterm`
+- **Worker Pool**: Asynchronous worker system for parallel ping and traceroute operations
+- **Configuration Management**: TOML-based configuration with flexible target specification
 - **Packet Capture**: Uses the `pcap` crate with feature-gated backends (libpcap, netmap, pcap-rs, ebpf, dpdk)
 - **Protocol Parsing**: The `tcpip` crate implements parsing for network protocols using a `TryFromBytes` trait pattern
-- **Async Runtime**: Main application uses Tokio for asynchronous packet processing
+- **Network Utilities**: Platform-specific network interface management and ARP table operations
 
 ### Current Implementation
-The main application implements an ARP resolver that:
-- Accepts an IPv4 address as command line argument
-- Uses Netlink-based network interface information retrieval to find appropriate interface
-- Sends ARP request packets via the determined network interface
-- Listens for ARP reply packets with timeout mechanism
-- Resolves target IP addresses to MAC addresses using Ethernet/IPv4 ARP protocol
+The main application implements a TUI-based network monitoring system that:
+- Loads monitoring targets from TOML configuration files
+- Manages worker pools for ping and traceroute operations
+- Provides real-time monitoring display with status updates
+- Supports both ping (ICMP Echo) and traceroute functionality
+- Uses platform-specific network interface discovery (Netlink on Linux, socket2 on macOS)
+- Implements ARP table resolution for network topology discovery
 
 ## Development Commands
 
@@ -42,8 +46,14 @@ cargo build --release
 # Run the main application (requires network interface access)
 cargo run
 
-# Run with specific target IP address
-cargo run -- 192.168.1.1
+# Run with specific configuration file
+cargo run -- --config config.toml
+
+# Run with debug logging
+RUST_LOG=debug cargo run
+
+# Run with tokio console for async debugging
+TOKIO_CONSOLE=1 cargo run
 
 # Run specific crate examples or binaries
 cargo run -p pcap --example <example_name>
@@ -74,14 +84,28 @@ cargo test <test_name>
 
 # Measure code coverage
 cargo llvm-cov
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run tests in single thread (for debugging)
+cargo test -- --test-threads=1
 ```
 
 ### Platform-Specific Dependencies
 - **libpcap development libraries**: Required for packet capture functionality
-- **Administrator privileges**: Required for network interface access
+- **Administrator privileges**: Required for network interface access and raw socket operations
 - **Platform-specific**: 
-  - Linux: `rtnetlink` for Netlink communication
-  - macOS: `nix`, `socket2`, `libc` for socket operations
+  - Linux: `rtnetlink` for Netlink communication, `nix` for system calls
+  - macOS: `nix`, `socket2`, `libc` for socket operations and interface management
+
+### Key Dependencies
+- **TUI**: `ratatui` for terminal UI, `crossterm` for terminal control
+- **Async Runtime**: `tokio` with console-subscriber for debugging
+- **Configuration**: `serde` and `toml` for configuration management
+- **CLI**: `clap` for command-line argument parsing
+- **Error Handling**: `color-eyre` for comprehensive error reporting
+- **Performance**: `fxhash` for optimized hash operations, `parking_lot` for efficient synchronization
 
 ## Code Style
 
@@ -117,6 +141,42 @@ src/
 - Remove unnecessary `extern crate` declarations
 - Organize imports with `use` statements following rustfmt configuration
 
+## Configuration Management
+
+The application uses TOML configuration files for flexible monitoring setup:
+
+```toml
+[ping]
+targets = ["8.8.8.8", "1.1.1.1"]
+interval = 1000  # milliseconds
+
+[traceroute]
+targets = ["8.8.8.8"]
+interval = 5000  # milliseconds
+max_hops = 30
+```
+
+### Configuration Options
+- **ping.targets**: Array of IP addresses to monitor with ping
+- **ping.interval**: Ping interval in milliseconds
+- **traceroute.targets**: Array of IP addresses to traceroute
+- **traceroute.interval**: Traceroute interval in milliseconds
+- **traceroute.max_hops**: Maximum number of hops for traceroute
+
+## TUI Usage
+
+The application provides a real-time terminal interface with:
+
+- **Ping monitoring**: Real-time ping status and latency display
+- **Traceroute visualization**: Network path discovery and hop analysis
+- **Status indicators**: Color-coded status for network reachability
+- **Dynamic updates**: Live updating of monitoring results
+
+### TUI Controls
+- **q**: Quit the application
+- **Tab**: Switch between different monitoring views
+- **Arrow keys**: Navigate through monitoring results
+
 ## Tool Management
 
 The project uses mise.toml for development tool management with:
@@ -124,6 +184,7 @@ The project uses mise.toml for development tool management with:
 - `rust = "nightly"`: Required for const trait implementations
 - `cargo-expand = "latest"`: For macro expansion debugging
 - `cargo-llvm-cov = "latest"`: For code coverage measurement
+- `cargo-watch = "latest"`: For development file watching
 
 ## Language Usage
 
@@ -181,6 +242,23 @@ gh api -X PATCH repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority -
 - Required checks: cargo build, cargo test, cargo clippy
 - Code coverage measurement with cargo llvm-cov
 - PRs can only be merged when all checks pass
+
+## Performance Optimization
+
+The application uses several optimization strategies:
+
+- **FxHashMap**: Uses `fxhash` instead of standard HashMap for better performance
+- **Parking Lot**: Efficient synchronization primitives for reduced contention
+- **Async Worker Pool**: Parallel processing of monitoring tasks
+- **Efficient Memory Management**: Reuses buffers and minimizes allocations
+
+## Error Handling
+
+The project uses `color-eyre` for comprehensive error reporting:
+- Structured error types with context
+- Color-coded error output in development
+- Detailed stack traces for debugging
+- Graceful error recovery in production
 
 ## Protocol Implementation Pattern
 
