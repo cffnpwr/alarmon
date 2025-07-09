@@ -146,21 +146,29 @@ src/
 The application uses TOML configuration files for flexible monitoring setup:
 
 ```toml
-[ping]
-targets = ["8.8.8.8", "1.1.1.1"]
-interval = 1000  # milliseconds
+# 監視対象
+targets = [
+  { name = "Google Primary DNS", host = "8.8.8.8" },
+  { name = "Cloudflare Primary DNS", host = "1.1.1.1" },
+]
+# 監視間隔（秒）
+interval = 1
+# タイムアウト（秒）
+timeout = 5
 
+# Traceroute設定 - オプション
 [traceroute]
-targets = ["8.8.8.8"]
-interval = 5000  # milliseconds
+# traceroute機能の有効/無効 - デフォルトtrue
+enable = true
+# 最大ホップ数 - デフォルト30
 max_hops = 30
 ```
 
 ### Configuration Options
-- **ping.targets**: Array of IP addresses to monitor with ping
-- **ping.interval**: Ping interval in milliseconds
-- **traceroute.targets**: Array of IP addresses to traceroute
-- **traceroute.interval**: Traceroute interval in milliseconds
+- **targets**: Array of monitoring targets with name and host
+- **interval**: Monitoring interval in seconds
+- **timeout**: Timeout for monitoring requests in seconds
+- **traceroute.enable**: Enable/disable traceroute functionality
 - **traceroute.max_hops**: Maximum number of hops for traceroute
 
 ## TUI Usage
@@ -225,8 +233,8 @@ gh api -X PATCH repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority -
 - Requires "triage" permissions for sub-issue operations
 
 ### Branch Naming Convention
-- Branch names MUST follow the pattern: `feature/[Issue番号]`
-- Examples: `feature/11`, `feature/23`
+- Branch names MUST follow the pattern: `[feature or bugfix or etc.]/[Issue番号 or PR番号]`
+- Examples: `feature/11`, `bugfix/23`, `hotfix/34`
 - **ALWAYS create branches from the latest main branch**
 - Before creating a new branch, ensure you are on main and pull the latest changes
 
