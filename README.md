@@ -2,19 +2,33 @@
 
 ## これはなに
 
-[deadman](https://github.com/upa/deadman)をRustで実装したものです。
+[deadman](https://github.com/upa/deadman)をRustで実装したTUIベースのネットワーク監視ツールです。
+
+リアルタイムでpingとtracerouteを実行し、ネットワークの到達性と経路情報を監視できます。
+
+## 機能
+
+- リアルタイムpingモニタリング: 複数のターゲットIPアドレスに対する継続的なping監視
+- traceroute機能: ネットワーク経路の可視化と分析
+- TUIインターフェース: 直感的な端末ベースのユーザーインターフェース
+- 設定ファイル対応: TOML形式での柔軟な監視設定
+- 非同期処理: 高効率な並列監視処理
+- クロスプラットフォーム: Linux、macOS対応
 
 ## Getting Started
 
 ### Install Prebuild Binary
 
-TBD
+GitHub Releasesから最新バイナリをダウンロードできます：
+
+- [最新リリース](https://github.com/cffnpwr/alarmon/releases/latest)
 
 ### Build from Source
 
-#### Prequisites
+#### Prerequisites
 
 - Rust 1.85.0以上
+- [libpcap](https://www.tcpdump.org/)
 
 #### Build
 
@@ -61,11 +75,11 @@ TBD
 ## Roadmap
 
 - [x] ICMPの送受信
-  - [ ] 経路情報の取得(traceroute機能)
-- [ ] ファイルからの監視対象の読み込み
-- [ ] 非同期処理
-- [ ] CLIでの一覧表示
-  - [ ] ウィンドウサイズ変更の追従
+  - [x] 経路情報の取得(traceroute機能)
+- [x] ファイルからの監視対象の読み込み
+- [x] 非同期処理
+- [x] TUIでの一覧表示
+  - [x] ウィンドウサイズ変更の追従
 - [ ] GUIの実装
   - [ ] ネイティブアプリ
   - [ ] Webアプリ

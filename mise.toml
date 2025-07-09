@@ -1,4 +1,5 @@
 [tools]
+act = "latest"
 "cargo:cargo-expand" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
 "cargo:cargo-watch" = "latest"

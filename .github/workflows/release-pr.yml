@@ -1,0 +1,144 @@
+name: Release PR
+
+on:
+  pull_request:
+    branches:
+      - release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-pr:
+    name: Validate Release PR
+    runs-on: ubuntu-latest
+    outputs:
+      skip_workflow: ${{ steps.check-labels.outputs.skip_workflow }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install gh CLI
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gh
+
+    - name: Validate PR labels
+      id: check-labels
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # PR番号を取得
+        PR_NUMBER=${{ github.event.pull_request.number }}
+
+        # ラベルを取得
+        LABELS=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
+
+        # major/minor/patchラベルがあるかチェック
+        if echo "$LABELS" | grep -qE '^(major|minor|patch)$'; then
+          echo "✅ バージョンラベルが見つかりました"
+          echo "$LABELS" | grep -E '^(major|minor|patch)$' | head -1
+          echo "skip_workflow=false" >> $GITHUB_OUTPUT
+        fi
+
+
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    needs: validate-pr
+    if: needs.validate-pr.outputs.skip_workflow != 'true'
+    outputs:
+      calculation_data: ${{ steps.calculate.outputs.calculation_data }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq gh
+
+        # Rustのインストール
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source ~/.cargo/env
+
+    - name: Compare versions
+      run: |
+        chmod +x scripts/compare-versions.sh
+        ./scripts/compare-versions.sh
+
+    - name: Calculate versions
+      id: calculate
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        chmod +x scripts/calculate-version.sh
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        ./scripts/calculate-version.sh $PR_NUMBER
+
+        # 計算結果をoutputに設定
+        CALCULATION_DATA=$(cat version-calculation.json | jq -c .)
+        echo "calculation_data=$CALCULATION_DATA" >> $GITHUB_OUTPUT
+
+    - name: Collect release notes
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        chmod +x scripts/collect-release-notes.sh
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        ./scripts/collect-release-notes.sh $PR_NUMBER
+
+    - name: Update versions and create tags
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        chmod +x scripts/update-versions.sh
+
+        # Gitの設定
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # バージョン更新とタグ作成
+        ./scripts/update-versions.sh
+
+    - name: Push changes and tags
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 変更をプッシュ
+        git push origin release
+
+        # タグをプッシュ
+        git push origin --tags
+
+  version-preview:
+    name: Version Preview
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Comment version preview
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        PR_NUMBER=${{ github.event.pull_request.number }}
+
+        # バージョン計算結果を読み込み
+        CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
+
+        if [ -n "$CALCULATION_DATA" ]; then
+          echo "## バージョンプレビュー" > comment.md
+          echo "" >> comment.md
+          echo "$CALCULATION_DATA" | jq -r '.[] | "- **\(.crate)**: \(.current_version) → \(.new_version) (\(.version_type))"' >> comment.md
+
+          gh pr comment $PR_NUMBER --body-file comment.md
+        fi
+
