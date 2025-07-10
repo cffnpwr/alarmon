@@ -134,7 +134,7 @@ jobs:
           # - ubuntu-latest
           - macos-latest
     env:
-      MISE_ENV: ci,cov
+      MISE_ENV: ci-base,cov
 
     steps:
       - name: Checkout repository
