@@ -10,28 +10,26 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  MISE_ENV: ci
   CARGO_TERM_COLOR: always
 
 jobs:
-  validate-pr:
-    name: Validate Release PR
+  check-labels:
+    name: Check PR Labels
     runs-on: ubuntu-latest
     outputs:
-      skip_workflow: ${{ steps.check-labels.outputs.skip_workflow }}
+      label: ${{ steps.check-labels.outputs.label }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install gh CLI
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gh
-
-    - name: Validate PR labels
+    - name: Check PR Labels
       id: check-labels
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        set -euo pipefail
+
         # PR番号を取得
         PR_NUMBER=${{ github.event.pull_request.number }}
 
@@ -39,86 +37,248 @@ jobs:
         LABELS=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
 
         # major/minor/patchラベルがあるかチェック
-        if echo "$LABELS" | grep -qE '^(major|minor|patch)$'; then
-          echo "✅ バージョンラベルが見つかりました"
-          echo "$LABELS" | grep -E '^(major|minor|patch)$' | head -1
-          echo "skip_workflow=false" >> $GITHUB_OUTPUT
+        if echo "$LABELS" | grep -vqE '^(major|minor|patch)$'; then
+          exit 1
         fi
 
+        # 最大レベルのラベルを取得
+        if echo "$LABELS" | grep -q 'major'; then
+          echo "label=major" >> $GITHUB_OUTPUT
+        elif echo "$LABELS" | grep -q 'minor'; then
+          echo "label=minor" >> $GITHUB_OUTPUT
+        elif echo "$LABELS" | grep -q 'patch'; then
+          echo "label=patch" >> $GITHUB_OUTPUT
+        else
 
   prepare-release:
     name: Prepare Release
     runs-on: ubuntu-latest
-    needs: validate-pr
-    if: needs.validate-pr.outputs.skip_workflow != 'true'
-    outputs:
-      calculation_data: ${{ steps.calculate.outputs.calculation_data }}
+    needs: check-labels
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Install dependencies
+    - name: Git configuration
       run: |
-        sudo apt-get update
-        sudo apt-get install -y jq gh
-
-        # Rustのインストール
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source ~/.cargo/env
-
-    - name: Compare versions
-      run: |
-        chmod +x scripts/compare-versions.sh
-        ./scripts/compare-versions.sh
-
-    - name: Calculate versions
-      id: calculate
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        chmod +x scripts/calculate-version.sh
-        PR_NUMBER=${{ github.event.pull_request.number }}
-        ./scripts/calculate-version.sh $PR_NUMBER
-
-        # 計算結果をoutputに設定
-        CALCULATION_DATA=$(cat version-calculation.json | jq -c .)
-        echo "calculation_data=$CALCULATION_DATA" >> $GITHUB_OUTPUT
-
-    - name: Collect release notes
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        chmod +x scripts/collect-release-notes.sh
-        PR_NUMBER=${{ github.event.pull_request.number }}
-        ./scripts/collect-release-notes.sh $PR_NUMBER
-
-    - name: Update versions and create tags
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        chmod +x scripts/update-versions.sh
-
-        # Gitの設定
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
-        # バージョン更新とタグ作成
-        ./scripts/update-versions.sh
+    - name: Cache mise tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.local/share/mise
+          ~/.cache/mise
+        key: ${{ runner.os }}-mise-${{ hashFiles('mise.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-mise-
 
-    - name: Push changes and merge to release branch
+    - name: Install mise
+      uses: jdx/mise-action@v2
+
+    - name: Install tools with mise
+      run: |
+        mise trust
+        mise install
+
+    - name: Get current versions
+      id: get-versions
+      run: |
+        versions="$(cargo metadata --format-version=1 --no-deps | \
+        jq '
+            ( .workspace_members | map({key: ., value: true}) | from_entries ) as $ws_members |
+            [
+                .packages[] |
+                select($ws_members[.id]) |
+                {key: .name, value: .version}
+            ] | from_entries
+        ')"
+        echo "versions=$versions" >> $GITHUB_OUTPUT
+
+    - name: Get latest tag versions
+      id: get-tag-versions
+      run: |
+        # Get crate names from the previous step's output
+        crate_names=($(echo '${{ steps.get-versions.outputs.versions }}' | jq -r 'keys[]'))
+
+        # Get latest tag version for each crate
+        declare -A tag_versions
+        for crate in "${crate_names[@]}"; do
+          latest_tag=$(git tag -l "${crate}-v*" | sort -V | tail -1)
+          if [ -n "$latest_tag" ]; then
+            version=$(echo "$latest_tag" | sed "s/^${crate}-v//")
+            tag_versions["$crate"]="$version"
+          else
+            tag_versions["$crate"]="0.0.0"
+          fi
+        done
+
+        # Convert to JSON format
+        tag_versions_json="{"
+        first=true
+        for crate in "${crate_names[@]}"; do
+          if [ "$first" = true ]; then
+            first=false
+          else
+            tag_versions_json+=","
+          fi
+          tag_versions_json+="\"$crate\":\"${tag_versions[$crate]}\""
+        done
+        tag_versions_json+="}"
+
+        echo "tag-versions=$tag_versions_json" >> $GITHUB_OUTPUT
+
+    - name: Get updated crates
+      id: get-updated-crates
+      run: |
+        # Get crate names from the previous step's output
+        crate_names=($(echo '${{ steps.get-versions.outputs.versions }}' | jq -r 'keys[]'))
+
+        # Get changed files between main and release branches
+        changed_files=$(git diff --name-only origin/main...origin/release)
+
+        # Find which crates have been updated
+        updated_crates=()
+        for crate in "${crate_names[@]}"; do
+          # Check if any files in the crate directory have been modified
+          if echo "$changed_files" | grep -q "^${crate}/\|^Cargo.toml\|^Cargo.lock"; then
+            updated_crates+=("$crate")
+          fi
+        done
+
+        # Convert to comma-separated list
+        updated_crates_list=$(IFS=','; echo "${updated_crates[*]}")
+
+        echo "updated-crates=$updated_crates_list" >> $GITHUB_OUTPUT
+
+    - name: Calculate new versions
+      id: calculate-new-versions
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 変更をmainブランチにプッシュ
+        # Get outputs from previous steps
+        current_versions='${{ steps.get-versions.outputs.versions }}'
+        tag_versions='${{ steps.get-tag-versions.outputs.tag-versions }}'
+        updated_crates='${{ steps.get-updated-crates.outputs.updated-crates }}'
+
+        # Convert updated crates to array
+        IFS=',' read -ra updated_crates_array <<< "$updated_crates"
+
+        # Get PR labels for main crate version calculation
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        labels=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
+
+        # Check if feat: commits exist in the PR
+        feat_commits=$(git log --oneline origin/main..HEAD | grep -c "^[a-f0-9]\+ feat:" || echo "0")
+
+        # Create base JSON object
+        new_versions_json="{}"
+
+        for crate in "${updated_crates_array[@]}"; do
+          current_version=$(echo "$current_versions" | jq -r ".[\"$crate\"]")
+          tag_version=$(echo "$tag_versions" | jq -r ".[\"$crate\"]")
+
+          # Check if version was manually updated
+          if [ "$current_version" != "$tag_version" ]; then
+            # Manual version update detected, use current version
+            new_versions_json=$(echo "$new_versions_json" | jq --arg crate "$crate" --arg version "$current_version" '.[$crate] = $version')
+          else
+            # Auto-calculate version using cargo-release
+            if [ "$crate" = "alarmon" ]; then
+              # Main crate: use label-based versioning
+              if echo "$labels" | grep -q "breaking\|major"; then
+                cargo release version --package "$crate" major --execute
+              elif echo "$labels" | grep -q "feature\|minor"; then
+                cargo release version --package "$crate" minor --execute
+              else
+                cargo release version --package "$crate" patch --execute
+              fi
+            else
+              # Other crates: use feat: commit detection
+              if [ "$feat_commits" -gt 0 ]; then
+                cargo release version --package "$crate" minor --execute
+              else
+                cargo release version --package "$crate" patch --execute
+              fi
+            fi
+
+            # Get the new version after cargo-release
+            new_version=$(cargo metadata --format-version=1 --no-deps | jq -r ".packages[] | select(.name == \"$crate\") | .version")
+            new_versions_json=$(echo "$new_versions_json" | jq --arg crate "$crate" --arg version "$new_version" '.[$crate] = $version')
+          fi
+        done
+
+        echo "new-versions=$new_versions_json" >> $GITHUB_OUTPUT
+
+    - name: Create version bump commit and push to main
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Switch to main branch
+        git checkout main
+        git pull origin main
+
+        # Create release commit for all workspace crates
+        cargo release commit --workspace --execute
+
+        # Push to main
         git push origin main
+
+    - name: Merge PR
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Merge the PR
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        gh pr merge $PR_NUMBER --merge --delete-branch
+
+    - name: Create release tags
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Get the new versions from previous step
+        new_versions='${{ steps.calculate-new-versions.outputs.new-versions }}'
+        updated_crates='${{ steps.get-updated-crates.outputs.updated-crates }}'
         
-        # releaseブランチにマージ
+        # Convert updated crates to array
+        IFS=',' read -ra updated_crates_array <<< "$updated_crates"
+        
+        # Switch to release branch to create tags
         git checkout release
-        git merge main --ff-only
-        git push origin release
+        git pull origin release
+        
+        # Create tags for each updated crate
+        for crate in "${updated_crates_array[@]}"; do
+          version=$(echo "$new_versions" | jq -r ".[\"$crate\"]")
+          tag_name="${crate}-v${version}"
+          
+          # Create and push tag
+          git tag "$tag_name"
+          git push origin "$tag_name"
+        done
 
-        # タグをプッシュ（これによりreleaseワークフローがトリガーされる）
-        git push origin --tags
-
+    - name: Upload PR body for alarmon release
+      if: contains(steps.get-updated-crates.outputs.updated-crates, 'alarmon')
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Get PR body and alarmon version
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        pr_body=$(gh pr view $PR_NUMBER --json body --jq '.body')
+        alarmon_version=$(echo '${{ steps.calculate-new-versions.outputs.new-versions }}' | jq -r '.alarmon')
+        
+        # Save PR body to file with version-specific name
+        filename="${alarmon_version}-release-note.md"
+        echo "$pr_body" > "$filename"
+        
+        echo "PR body saved as $filename for alarmon release"
+      
+    - name: Upload PR body artifact
+      if: contains(steps.get-updated-crates.outputs.updated-crates, 'alarmon')
+      uses: actions/upload-artifact@v4
+      with:
+        name: alarmon-release-note
+        path: "*-release-note.md"
+        retention-days: 1
