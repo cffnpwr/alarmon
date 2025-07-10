@@ -37,7 +37,8 @@ jobs:
         LABELS=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
 
         # major/minor/patchラベルがあるかチェック
-        if echo "$LABELS" | grep -vqE '^(major|minor|patch)$'; then
+        if ! echo "$LABELS" | grep -qE '^(major|minor|patch)$'; then
+          echo "Error: PR must have one of major/minor/patch labels"
           exit 1
         fi
 
@@ -49,6 +50,9 @@ jobs:
         elif echo "$LABELS" | grep -q 'patch'; then
           echo "label=patch" >> $GITHUB_OUTPUT
         else
+          echo "Error: No valid release label found"
+          exit 1
+        fi
 
   prepare-release:
     name: Prepare Release
