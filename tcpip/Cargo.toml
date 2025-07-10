@@ -1,7 +1,7 @@
 [package]
 name = "tcpip"
 description = "TCP/IP packet parsing library"
-version.workspace = true
+version = "1.0.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -10,4 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bytes.workspace = true
+chrono = { version = "0.4.41", features = ["serde"] }
+common-lib = { git = "https://github.com/cffnpwr/rust-common-lib.git", branch = "feature/auto-impl-macro", version = "0.1.0", features = [
+  "auto-impl-macro",
+] }
 thiserror.workspace = true

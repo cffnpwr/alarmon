@@ -1,6 +1,7 @@
 [package]
-name = "deadman"
-version.workspace = true
+name = "alarmon"
+description = "Alive and Route Monitoring Tool"
+version = "1.0.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -9,22 +10,70 @@ rust-version.workspace = true
 
 [workspace]
 resolver = "3"
-members = ["pcap", "tcpip"]
+members = ["pcap", "tcpip", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
 edition = "2024"
 authors = ["cffnpwr <cffnpwr@gmail.com>"]
-repository = "https://github.com/cffnpwr/deadman-rs.git"
+repository = "https://github.com/cffnpwr/alarmon.git"
 license-file = "LICENSE"
 rust-version = "1.85.0"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
 thiserror = "2.0.12"
+chrono = { version = "0.4.41", features = ["serde"] }
+nix = { version = "0.30.1", features = ["net"] }
+tokio = { version = "1.46.1", features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "time",
+  "sync",
+] }
+tcpip = { path = "./tcpip" }
+pcap = { path = "./pcap", features = ["libpcap"] }
+bytes = "1.9.0"
 
 [dependencies]
 anyhow.workspace = true
-tokio = { version = "1.45.1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
-pcap = { path = "./pcap", features = ["libpcap"] }
-tcpip = { path = "./tcpip" }
+async-trait = "0.1.88"
+pcap.workspace = true
+tokio.workspace = true
+tcpip.workspace = true
+thiserror.workspace = true
+clap = { version = "4.5.41", features = ["derive"] }
+toml = "0.9.0"
+log = "0.4.27"
+env_logger = "0.11.8"
+chrono.workspace = true
+nix.workspace = true
+serde = { version = "1.0.219", features = ["derive"] }
+serde_with = { version = "3.14.0", features = ["chrono", "time_0_3"] }
+parking_lot = "0.12.4"
+fxhash = "0.2.1"
+itertools = "0.14.0"
+tokio-util = "0.7.15"
+bytes.workspace = true
+rand = "0.9.1"
+ratatui = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+color-eyre = "0.6.3"
+futures = "0.3"
+console-subscriber = { version = "0.4.1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rtnetlink = "0.17.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+socket2 = "0.6.0"
+libc = "0.2.174"
+
+[dev-dependencies]
+tempfile = "3.20.0"
+mockall = "0.13.1"
+tokio-test = "0.4.4"
+
+[features]
+tokio-console = ["dep:console-subscriber"]

@@ -2,31 +2,47 @@ mod ether_type;
 mod mac_address;
 mod vlan;
 
+use bytes::{Bytes, BytesMut};
+use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
 pub use self::ether_type::{EtherType, EtherTypeError};
 pub use self::mac_address::{MacAddr, MacAddrError};
 pub use self::vlan::{VLAN, VLANError};
+use crate::TryFromBytes;
 
-#[derive(Debug, Error, PartialEq)]
+/// Ethernetフレーム処理に関するエラー
+///
+/// Ethernetフレームのパース・検証で発生する可能性のあるエラーを定義します。
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EthernetFrameError {
-    #[error("Invalid frame")]
-    InvalidFrame,
-    #[error("Invalid MAC address")]
+    #[error("Invalid frame length. expected at less than 1514 bytes, but got {0} bytes")]
+    InvalidFrameLength(usize),
+    #[error(transparent)]
     InvalidMacAddr(#[from] MacAddrError),
-    #[error("Invalid EtherType")]
+    #[error(transparent)]
     InvalidEtherType(#[from] EtherTypeError),
-    #[error("Invalid VLAN")]
+    #[error(transparent)]
     InvalidVlan(#[from] VLANError),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Ethernetフレーム
+///
+/// IEEE 802.3標準に基づくEthernetフレーム構造を表現します。
+/// VLANタグやQinQにも対応します。
+///
+/// 参照:
+/// - [IEEE 802.3-2018 - Ethernet](https://standards.ieee.org/standard/802_3-2018.html)
+/// - [IANA EtherType Numbers](https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml)
+/// - [IEEE 802.1Q VLAN Tagging](https://standards.ieee.org/standard/802_1Q-2018.html)
+#[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
+#[auto_try_from(method = try_from_bytes, error = EthernetFrameError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
 pub struct EthernetFrame {
     pub src: MacAddr,
     pub dst: MacAddr,
     pub ether_type: EtherType,
     pub vlan: Option<VLAN>,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 impl EthernetFrame {
@@ -35,26 +51,28 @@ impl EthernetFrame {
         dst: &MacAddr,
         ether_type: &EtherType,
         vlan: Option<&VLAN>,
-        payload: impl AsRef<[u8]>,
+        payload: impl Into<Bytes>,
     ) -> Self {
         EthernetFrame {
-            src: src.clone(),
-            dst: dst.clone(),
-            ether_type: ether_type.clone(),
+            src: *src,
+            dst: *dst,
+            ether_type: *ether_type,
             vlan: vlan.cloned(),
-            payload: payload.as_ref().to_vec(),
+            payload: payload.into(),
         }
     }
 }
-impl TryFrom<&[u8]> for EthernetFrame {
+
+impl TryFromBytes for EthernetFrame {
     type Error = EthernetFrameError;
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+    fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, Self::Error> {
+        let value = value.as_ref();
         let frame_length = value.len();
         // 本来は最小フレームサイズが６４Byteであるが、キャプチャ手段によってはパディングが削られるので最大サイズのみチェックする
         // Jumbo Frameはサポートしない
         if frame_length > 1514 {
-            return Err(EthernetFrameError::InvalidFrame);
+            return Err(EthernetFrameError::InvalidFrameLength(frame_length));
         }
 
         // MACアドレスを取得
@@ -77,7 +95,7 @@ impl TryFrom<&[u8]> for EthernetFrame {
             ether_type => (ether_type, None, 0),
         };
         // ペイロードを取得
-        let payload = value[14 + vlan_offset..].to_vec();
+        let payload = Bytes::copy_from_slice(&value[14 + vlan_offset..]);
 
         Ok(EthernetFrame {
             src: src_mac,
@@ -88,18 +106,10 @@ impl TryFrom<&[u8]> for EthernetFrame {
         })
     }
 }
-impl TryFrom<Vec<u8>> for EthernetFrame {
+impl TryFrom<&EthernetFrame> for Bytes {
     type Error = EthernetFrameError;
 
-    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        EthernetFrame::try_from(value.as_slice())
-    }
-}
-impl TryFrom<EthernetFrame> for Vec<u8> {
-    type Error = EthernetFrameError;
-
-    fn try_from(value: EthernetFrame) -> Result<Self, Self::Error> {
-        let mut value = value;
+    fn try_from(value: &EthernetFrame) -> Result<Self, Self::Error> {
         let vlan_size = match value.vlan {
             Some(VLAN::Tag(_)) => 4,
             Some(VLAN::QinQ { .. }) => 8,
@@ -107,20 +117,13 @@ impl TryFrom<EthernetFrame> for Vec<u8> {
         };
         let frame_size = value.payload.len() + 14 + vlan_size;
         if frame_size > 1514 {
-            return Err(EthernetFrameError::InvalidFrame);
+            return Err(EthernetFrameError::InvalidFrameLength(frame_size));
         }
-        // Ethernet Frameのサイズが６０Byte未満の場合、パディングを追加
-        let frame_size = if frame_size < 60 {
-            let padsize = 60 - frame_size;
-            let padding = vec![0u8; padsize];
-            value.payload.extend(padding);
 
-            60
-        } else {
-            frame_size
-        };
+        let final_frame_size = if frame_size < 60 { 60 } else { frame_size };
+        let mut bytes = BytesMut::with_capacity(final_frame_size);
 
-        let mut bytes = Vec::with_capacity(frame_size);
+        // MACアドレスとEtherType
         let dst: [u8; 6] = value.dst.into();
         let src: [u8; 6] = value.src.into();
         let ether_type: [u8; 2] = value.ether_type.into();
@@ -132,8 +135,36 @@ impl TryFrom<EthernetFrame> for Vec<u8> {
             bytes.extend_from_slice(&vlan_bytes);
         }
         bytes.extend_from_slice(&ether_type);
-        bytes.extend(value.payload);
-        Ok(bytes)
+        bytes.extend_from_slice(&value.payload);
+
+        // Ethernet Frameのサイズが６０Byte未満の場合、パディングを追加
+        if frame_size < 60 {
+            let padsize = 60 - frame_size;
+            bytes.extend(std::iter::repeat_n(0u8, padsize));
+        }
+
+        Ok(bytes.freeze())
+    }
+}
+impl TryFrom<EthernetFrame> for Bytes {
+    type Error = EthernetFrameError;
+
+    fn try_from(value: EthernetFrame) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+impl TryFrom<EthernetFrame> for Vec<u8> {
+    type Error = EthernetFrameError;
+
+    fn try_from(value: EthernetFrame) -> Result<Self, Self::Error> {
+        Bytes::try_from(value).map(|bytes| bytes.to_vec())
+    }
+}
+impl TryFrom<&EthernetFrame> for Vec<u8> {
+    type Error = EthernetFrameError;
+
+    fn try_from(value: &EthernetFrame) -> Result<Self, Self::Error> {
+        Bytes::try_from(value).map(|bytes| bytes.to_vec())
     }
 }
 
@@ -185,9 +216,9 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
+        let payload = Bytes::from(vec![0u8; 46]);
 
-        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
+        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, payload.clone());
         assert_eq!(frame.src, src_mac);
         assert_eq!(frame.dst, dst_mac);
         assert_eq!(frame.ether_type, ether_type);
@@ -201,8 +232,8 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
-        let expected = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
+        let payload = Bytes::from(vec![0u8; 46]);
+        let expected = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, payload.clone());
 
         // TryFrom &[u8]
         // 一般的なEthernet Frame (VLANなし)
@@ -212,7 +243,10 @@ mod tests {
 
         let frame_result = EthernetFrame::try_from(vec![0u8; 1515].as_slice());
         assert!(frame_result.is_err());
-        assert_eq!(frame_result.unwrap_err(), EthernetFrameError::InvalidFrame);
+        assert!(matches!(
+            frame_result.unwrap_err(),
+            EthernetFrameError::InvalidFrameLength(_)
+        ));
 
         // VLANあり
         let vlan_tag =
@@ -222,7 +256,7 @@ mod tests {
             &dst_mac,
             &ether_type,
             Some(&VLAN::Tag(vlan_tag)),
-            &payload,
+            payload.clone(),
         );
         let frame_result = EthernetFrame::try_from(&VLAN_FRAME_BYTES[..]);
         assert!(frame_result.is_ok());
@@ -241,7 +275,7 @@ mod tests {
                 s_tag: s_tag,
                 c_tag: c_tag,
             }),
-            &payload,
+            payload.clone(),
         );
         let frame_result = EthernetFrame::try_from(&QINQ_FRAME_BYTES[..]);
         assert!(frame_result.is_ok());
@@ -260,10 +294,10 @@ mod tests {
         let dst_mac =
             MacAddr::try_from("01:23:45:67:89:CD").expect("Failed to parse dst MAC address");
         let ether_type = EtherType::IPv4;
-        let payload = vec![0u8; 46];
+        let payload = Bytes::from(vec![0u8; 46]);
 
         // Into Vec<u8>
-        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
+        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, payload.clone());
         let frame_vec: Result<Vec<u8>, _> = frame.try_into();
         assert!(frame_vec.is_ok());
         assert_eq!(frame_vec.unwrap().as_slice(), NORMAL_FRAME_BYTES);
@@ -276,7 +310,7 @@ mod tests {
             &dst_mac,
             &ether_type,
             Some(&VLAN::Tag(vlan_tag)),
-            &payload,
+            payload.clone(),
         );
         let vlan_frame_vec: Result<Vec<u8>, _> = vlan_frame.try_into();
         assert!(vlan_frame_vec.is_ok());
@@ -295,7 +329,7 @@ mod tests {
                 s_tag: s_tag,
                 c_tag: c_tag,
             }),
-            &payload,
+            payload.clone(),
         );
         let qinq_frame_vec: Result<Vec<u8>, _> = qinq_frame.try_into();
         assert!(qinq_frame_vec.is_ok());
@@ -303,9 +337,12 @@ mod tests {
 
         // ペイロードが1500バイトを超える場合
         let payload = vec![0u8; 1501];
-        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, &payload);
+        let frame = EthernetFrame::new(&src_mac, &dst_mac, &ether_type, None, payload.clone());
         let frame_vec: Result<Vec<u8>, _> = frame.try_into();
         assert!(frame_vec.is_err());
-        assert_eq!(frame_vec.unwrap_err(), EthernetFrameError::InvalidFrame);
+        assert!(matches!(
+            frame_vec.unwrap_err(),
+            EthernetFrameError::InvalidFrameLength(_),
+        ));
     }
 }

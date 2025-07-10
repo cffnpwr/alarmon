@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(cargo --list)",
+      "Bash(cargo check:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo llvm-cov:*)",
+      "Bash(rustc --version)",
+      "Bash(rustup --version)",
+      "Bash(rustup show)",
+      "Bash(rustup toolchain list)",
+      "Bash(rustup component list)",
+      "Bash(gh api repos/{owner}/{repo}/issues*)",
+      "Bash(gh api repos/{owner}/{repo}/issues/*/sub_issues)",
+      "Bash(gh --version)",
+      "Bash(act:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath | select(endswith(\".rs\"))' | xargs -r -- cargo fmt -- "
+          }
+        ]
+      }
+    ]
+  }
+}

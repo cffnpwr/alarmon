@@ -1,0 +1,283 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'alarmon-v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml"
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+
+jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    if: contains(github.ref, 'refs/tags/alarmon-v')
+    outputs:
+      calculation_data: ${{ steps.calculate.outputs.calculation_data }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          # git-cliffのインストール
+          wget -qO- https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-0.24.2-x86_64-unknown-linux-gnu.tar.gz | tar -xzf -
+          sudo mv git-cliff-0.24.2/git-cliff /usr/local/bin/
+
+      - name: Download PR body artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: alarmon-release-note
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Extract version from tag
+        id: calculate
+        run: |
+          # タグからバージョンを抽出
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          ALARMON_VERSION=${TAG_NAME#alarmon-v}
+
+          # 計算データを生成（簡単な形式）
+          calculation_data="{\"alarmon\":\"$ALARMON_VERSION\"}"
+          echo "calculation_data=$calculation_data" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs: prepare-release
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: arm64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            name: amd64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache Homebrew packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Homebrew
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/release.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      - name: Install dependencies
+        run: |
+          brew install libpcap mold
+
+      - name: Install mise
+        uses: jdx/mise-action@v2
+
+      - name: Install tools with mise
+        run: |
+          mise trust
+          mise install
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-binary
+          path: target/${{ matrix.target }}/release/alarmon
+
+  create-universal:
+    name: Create Universal Binary
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-binary
+          path: binaries/arm64/
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: amd64-binary
+          path: binaries/amd64/
+
+      - name: Create Universal Binary
+        run: |
+          mkdir -p binaries/universal
+          lipo -create -output binaries/universal/alarmon \
+            binaries/arm64/alarmon \
+            binaries/amd64/alarmon
+
+      - name: Verify Universal Binary
+        run: |
+          lipo -info binaries/universal/alarmon
+          file binaries/universal/alarmon
+
+      - name: Upload Universal Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-binary
+          path: binaries/universal/alarmon
+
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [prepare-release, build, create-universal]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-binary"
+          merge-multiple: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gh
+
+          # git-cliffのインストール
+          wget -qO- https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-0.24.2-x86_64-unknown-linux-gnu.tar.gz | tar -xzf -
+          sudo mv git-cliff-0.24.2/git-cliff /usr/local/bin/
+
+
+      - name: Create release artifacts
+        run: |
+          # バージョン計算結果を取得
+          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
+
+          # alarmonクレートのバージョンを取得
+          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+
+          # アーティファクトディレクトリを作成
+          mkdir -p artifacts
+
+          # arm64アーティファクト
+          mkdir -p tmp/arm64
+          cp arm64-binary/alarmon tmp/arm64/
+          cp README.md LICENSE tmp/arm64/
+          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-arm64.tar.gz -C tmp/arm64 .
+
+          # amd64アーティファクト
+          mkdir -p tmp/amd64
+          cp amd64-binary/alarmon tmp/amd64/
+          cp README.md LICENSE tmp/amd64/
+          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-amd64.tar.gz -C tmp/amd64 .
+
+          # universalアーティファクト
+          mkdir -p tmp/universal
+          cp universal-binary/alarmon tmp/universal/
+          cp README.md LICENSE tmp/universal/
+          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-universal.tar.gz -C tmp/universal .
+
+          # チェックサム生成
+          cd artifacts
+          shasum -a 256 *.tar.gz > checksums.txt
+          cd ..
+
+      - name: Generate CHANGELOG
+        run: |
+          # 現在のタグを取得
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          # 前回のalarmonタグを取得
+          PREVIOUS_TAG=$(git tag -l "alarmon-v*" | grep -v "^${CURRENT_TAG}$" | sort -V | tail -1 || echo "")
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            # 前回のタグから今回までの変更を生成
+            git-cliff --config cliff.toml --tag-pattern "alarmon-v.*" --current > CHANGELOG.md
+          else
+            # 初回リリースの場合
+            git-cliff --config cliff.toml --tag-pattern "alarmon-v.*" --unreleased > CHANGELOG.md
+          fi
+
+      - name: Create release notes
+        run: |
+          # PRから収集したリリースノートを読み込み
+          PR_RELEASE_NOTES=""
+          if [ -f "*-release-note.md" ]; then
+            PR_RELEASE_NOTES=$(cat *-release-note.md)
+          fi
+
+          # CHANGELOGを読み込み
+          CHANGELOG=""
+          if [ -f "CHANGELOG.md" ]; then
+            CHANGELOG=$(cat CHANGELOG.md)
+          fi
+
+          # バージョン情報を取得
+          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
+          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+
+          # リリースノートを生成
+          {
+            echo "# Release alarmon v${ALARMON_VERSION}"
+            echo ""
+
+            if [ -n "$PR_RELEASE_NOTES" ]; then
+              echo "## Release note"
+              echo "$PR_RELEASE_NOTES"
+              echo ""
+            fi
+
+            if [ -n "$CHANGELOG" ]; then
+              echo "## CHANGELOG"
+              echo "$CHANGELOG"
+              echo ""
+            fi
+          } > release-notes-final.md
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # バージョン情報を取得
+          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
+          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+
+          # GitHubリリースを作成
+          gh release create "alarmon-v${ALARMON_VERSION}" \
+            --title "alarmon v${ALARMON_VERSION}" \
+            --notes-file release-notes-final.md \
+            artifacts/*

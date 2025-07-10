@@ -2,19 +2,36 @@ use std::fmt::{self, Display};
 
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum EtherTypeError {
     #[error("Unsupported EtherType")]
     UnsupportedEtherType,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EtherType {
+    /// Internet Protocol version 4 (IPv4)
+    /// ref: RFC9542
     IPv4 = 0x0800,
+
+    /// Address Resolution Protocol (ARP)
+    /// ref: RFC9542
     ARP = 0x0806,
+
+    /// Reverse Address Resolution Protocol (RARP)
+    /// ref: RFC903
     RARP = 0x8035,
+
+    /// Internet Protocol version 6 (IPv6)
+    /// ref: RFC9542
     IPv6 = 0x86DD,
+
+    /// Customer VLAN Tag Type (C-Tag, formerly called the Q-Tag)
+    /// ref: RFC9542
     VLAN = 0x8100,
+
+    /// IEEE Std 802.1Q - Service VLAN tag identifier (S-Tag)
+    /// ref: IEEE Std 802.1ad
     QinQ = 0x88A8,
 }
 impl Display for EtherType {
@@ -25,7 +42,7 @@ impl Display for EtherType {
             EtherType::RARP => write!(f, "RARP"),
             EtherType::IPv6 => write!(f, "IPv6"),
             EtherType::VLAN => write!(f, "VLAN"),
-            EtherType::QinQ => write!(f, "QinQ"),
+            EtherType::QinQ => write!(f, "IEEE 802.1Q in IEEE 802.1Q"),
         }
     }
 }
@@ -79,9 +96,20 @@ impl From<EtherType> for u16 {
         val as u16
     }
 }
+impl From<&EtherType> for u16 {
+    fn from(val: &EtherType) -> Self {
+        *val as u16
+    }
+}
 impl From<EtherType> for [u8; 2] {
     fn from(value: EtherType) -> Self {
         let value = value as u16;
+        value.to_be_bytes()
+    }
+}
+impl From<&EtherType> for [u8; 2] {
+    fn from(value: &EtherType) -> Self {
+        let value = *value as u16;
         value.to_be_bytes()
     }
 }
