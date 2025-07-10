@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MISE_ENV: ci-base
+  MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 

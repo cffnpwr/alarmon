@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MISE_ENV: ci-base
+  MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -134,7 +134,7 @@ jobs:
           # - ubuntu-latest
           - macos-latest
     env:
-      MISE_ENV: ci-base,cov
+      MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml:mise.cov.toml"
 
     steps:
       - name: Checkout repository
