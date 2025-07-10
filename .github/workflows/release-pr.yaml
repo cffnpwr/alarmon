@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MISE_ENV: ci-base
+  MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-labels
     env:
-      MISE_ENV: ci-base,release
+      MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml:mise.release.toml"
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -229,7 +229,7 @@ jobs:
         git pull origin main
 
         # Create release commit for all workspace crates
-        cargo release commit --workspace --execute
+        cargo release commit --execute
 
         # Push to main
         git push origin main
