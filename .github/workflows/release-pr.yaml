@@ -58,6 +58,9 @@ jobs:
     name: Prepare Release
     runs-on: ubuntu-latest
     needs: check-labels
+    permissions:
+      contents: write
+      pull-requests: write
     env:
       MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml:mise.release.toml"
     steps:
