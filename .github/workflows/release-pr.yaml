@@ -220,7 +220,18 @@ jobs:
 
         echo "new-versions=$new_versions_json" >> $GITHUB_OUTPUT
 
+    - name: Check updated files
+      id: check-updated-files
+      run: |
+        # Check if there are any uncommitted changes
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "has-changes=true" >> $GITHUB_OUTPUT
+        else
+          echo "has-changes=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Create version bump commit and push to main
+      if: steps.check-updated-files.outputs.has-changes == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
