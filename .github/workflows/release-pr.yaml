@@ -91,7 +91,7 @@ jobs:
       id: get-versions
       run: |
         versions="$(cargo metadata --format-version=1 --no-deps | \
-        jq '
+        jq -c '
             ( .workspace_members | map({key: ., value: true}) | from_entries ) as $ws_members |
             [
                 .packages[] |
