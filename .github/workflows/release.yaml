@@ -86,16 +86,6 @@ jobs:
         run: |
           brew install libpcap mold
 
-      - name: Cache mise tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/mise
-            ~/.cache/mise
-          key: ${{ runner.os }}-mise-${{ hashFiles('mise.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-mise-
-
       - name: Install mise
         uses: jdx/mise-action@v2
 
