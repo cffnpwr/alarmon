@@ -173,13 +173,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mise-
 
-      - name: Setup cache key for mise
-        run: echo "MISE_CACHE_KEY=${MISE_ENV//,/_}" >> $GITHUB_ENV
-        
       - name: Install mise
         uses: jdx/mise-action@v2
         with:
-          cache_key_prefix: mise-v0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('mise.toml', 'mise.*.toml') }}-${{ env.MISE_CACHE_KEY }}
+          cache: false
 
       - name: Install tools with mise
         run: |
