@@ -58,6 +58,8 @@ jobs:
     name: Prepare Release
     runs-on: ubuntu-latest
     needs: check-labels
+    env:
+      MISE_ENV: ci,release
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -245,19 +247,19 @@ jobs:
         # Get the new versions from previous step
         new_versions='${{ steps.calculate-new-versions.outputs.new-versions }}'
         updated_crates='${{ steps.get-updated-crates.outputs.updated-crates }}'
-        
+
         # Convert updated crates to array
         IFS=',' read -ra updated_crates_array <<< "$updated_crates"
-        
+
         # Switch to release branch to create tags
         git checkout release
         git pull origin release
-        
+
         # Create tags for each updated crate
         for crate in "${updated_crates_array[@]}"; do
           version=$(echo "$new_versions" | jq -r ".[\"$crate\"]")
           tag_name="${crate}-v${version}"
-          
+
           # Create and push tag
           git tag "$tag_name"
           git push origin "$tag_name"
@@ -272,13 +274,13 @@ jobs:
         PR_NUMBER=${{ github.event.pull_request.number }}
         pr_body=$(gh pr view $PR_NUMBER --json body --jq '.body')
         alarmon_version=$(echo '${{ steps.calculate-new-versions.outputs.new-versions }}' | jq -r '.alarmon')
-        
+
         # Save PR body to file with version-specific name
         filename="${alarmon_version}-release-note.md"
         echo "$pr_body" > "$filename"
-        
+
         echo "PR body saved as $filename for alarmon release"
-      
+
     - name: Upload PR body artifact
       if: contains(steps.get-updated-crates.outputs.updated-crates, 'alarmon')
       uses: actions/upload-artifact@v4
