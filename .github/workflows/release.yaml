@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MISE_ENV: ci
+  MISE_ENV: ci-base
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
