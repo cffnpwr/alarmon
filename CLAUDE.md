@@ -234,7 +234,8 @@ gh api -X PATCH repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority -
 
 ### Branch Naming Convention
 - Branch names MUST follow the pattern: `[feature or bugfix or etc.]/[Issue番号 or PR番号]`
-- Examples: `feature/11`, `bugfix/23`, `hotfix/34`
+- Optionally, additional description can be added after the issue/PR number: `[feature or bugfix or etc.]/[Issue番号 or PR番号]_[description]`
+- Examples: `feature/11`, `bugfix/23`, `hotfix/34`, `feature/999_hoge_fuga`
 - **ALWAYS create branches from the latest main branch**
 - Before creating a new branch, ensure you are on main and pull the latest changes
 
