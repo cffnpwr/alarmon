@@ -14,9 +14,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changed-files:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.changes.outputs.rust }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            rust:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '**/Cargo.toml'
+              - 'rustfmt.toml'
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
+    needs: changed-files
+    if: needs.changed-files.outputs.rust == 'true'
     strategy:
       matrix:
         os:
@@ -96,6 +119,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ${{ matrix.os }}
+    needs: test
     strategy:
       matrix:
         os:
