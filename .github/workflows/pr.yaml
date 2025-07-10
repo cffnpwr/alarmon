@@ -81,17 +81,6 @@ jobs:
         run: |
           brew install libpcap
 
-      - name: Cache mise tools
-        uses: actions/cache@v4
-        if: needs.changed-files.outputs.rust == 'true'
-        with:
-          path: |
-            ~/.local/share/mise
-            ~/.cache/mise
-          key: ${{ runner.os }}-mise-${{ hashFiles('mise.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-mise-
-
       - name: Install mise
         uses: jdx/mise-action@v2
         if: needs.changed-files.outputs.rust == 'true'
@@ -171,20 +160,8 @@ jobs:
         run: |
           brew install libpcap
 
-      - name: Cache mise tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/mise
-            ~/.cache/mise
-          key: ${{ runner.os }}-mise-${{ hashFiles('mise.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-mise-
-
       - name: Install mise
         uses: jdx/mise-action@v2
-        with:
-          cache: false
 
       - name: Install tools with mise
         run: |
