@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr};
-use std::{io, mem, process, slice};
+use std::{mem, process, slice};
 
 use fxhash::FxHashMap;
 use libc::{
@@ -12,10 +12,9 @@ use nix::ifaddrs::getifaddrs;
 use nix::net::if_::if_nametoindex;
 use socket2::{Domain, Protocol, Socket, Type};
 use tcpip::ethernet::MacAddr;
-use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv4NetmaskError};
-use thiserror::Error;
+use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask};
 
-use super::{LinkType, NetworkInterface, RouteEntry};
+use super::{LinkType, NetlinkError, NetworkInterface, RouteEntry};
 
 const RTM_MSGHDR_LEN: usize = mem::size_of::<rt_msghdr>();
 const ATTR_LEN: usize = 128;
@@ -44,24 +43,6 @@ struct NetworkInterfaceInner {
     name: String,
     mac_addr: MacAddr,
     ip_addrs: Vec<IPCIDR>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum NetlinkError {
-    #[error("Failed to get network interfaces: {0}")]
-    FailedToGetIfAddrs(#[source] nix::Error),
-    #[error("Failed to open socket: {0}")]
-    FailedToOpenSocket(io::ErrorKind),
-    #[error("PF_ROUTE send error: {0}")]
-    PfRouteSendError(io::ErrorKind),
-    #[error("PF_ROUTE receive error: {0}")]
-    PfRouteReceiveError(io::ErrorKind),
-    #[error("No such network interface: index = {0}")]
-    NoSuchInterfaceIdx(u32),
-    #[error(transparent)]
-    InvalidNetmask(#[from] IPv4NetmaskError),
-    #[error("Unsupported link type: {0}")]
-    UnsupportedLinkType(u8),
 }
 
 pub struct Netlink {
