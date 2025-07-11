@@ -31,9 +31,9 @@ pub async fn run_ping_monitoring(
         let id = target_config.id;
         let target_ip = Ipv4Addr::from_str(&target_config.host)?;
 
-        // LinkTypeを確認（Ethernetのみサポート）
-        let netlink = Netlink::new()?;
-        let route = netlink.get_route(target_ip)?;
+        // LinkTypeを確認
+        let netlink = Netlink::new().await?;
+        let route = netlink.get_route(target_ip).await?;
 
         let ping_targets = ping_targets_by_ni
             .entry(route.interface.index)
