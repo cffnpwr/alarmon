@@ -13,6 +13,8 @@ use nix::net::if_::if_nametoindex;
 use socket2::{Domain, Protocol, Socket, Type};
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask};
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 
 use super::{LinkType, NetlinkError, NetworkInterface, RouteEntry};
 
@@ -46,18 +48,24 @@ struct NetworkInterfaceInner {
 }
 
 pub struct Netlink {
-    pf_route_sock: Socket,
+    pf_route_sock_fd: AsyncFd<Socket>,
 }
 impl Netlink {
-    pub fn new() -> Result<Self, NetlinkError> {
-        let pf_route_sock = Socket::new(
+    // NOTE: Linuxとの互換性のため非同期関数
+    pub async fn new() -> Result<Self, NetlinkError> {
+        let sock = Socket::new(
             Domain::from(PF_ROUTE),
             Type::from(SOCK_RAW),
             Some(Protocol::from(0)),
         )
         .map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
+        sock.set_nonblocking(true)
+            .map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
+        let fd = AsyncFd::new(sock).map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
 
-        Ok(Netlink { pf_route_sock })
+        Ok(Netlink {
+            pf_route_sock_fd: fd,
+        })
     }
 
     fn get_interface_from_sockaddr_dl(
@@ -125,7 +133,7 @@ impl Netlink {
     }
 
     /// 特定の宛先IPアドレスに対する最適ルートを取得
-    pub fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
+    pub async fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
         // PF_ROUTEで送信するデータ
         let mut rt_msg = rt_msg {
             hdr: rt_msghdr {
@@ -173,8 +181,13 @@ impl Netlink {
         // PF_ROUTEソケットにメッセージを送信
         let buf =
             unsafe { slice::from_raw_parts(&rt_msg as *const rt_msg as *const u8, rt_msg_len) };
-        self.pf_route_sock
-            .send(buf)
+
+        self.pf_route_sock_fd
+            .async_io(Interest::WRITABLE, |sock| {
+                sock.send(buf)?;
+                Ok(())
+            })
+            .await
             .map_err(|e| NetlinkError::PfRouteSendError(e.kind()))?;
 
         // PF_ROUTEソケットからの応答を受信
@@ -182,8 +195,9 @@ impl Netlink {
             slice::from_raw_parts_mut(&rt_msg as *const rt_msg as *mut MaybeUninit<u8>, rt_msg_len)
         };
         let recv_len = self
-            .pf_route_sock
-            .recv(buf)
+            .pf_route_sock_fd
+            .async_io(Interest::READABLE, |sock| sock.recv(buf))
+            .await
             .map_err(|e| NetlinkError::PfRouteReceiveError(e.kind()))?;
 
         self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len)
@@ -293,9 +307,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_get_interface_from_sockaddr_dl() -> Result<()> {
-        let netlink = Netlink::new()?;
+    #[tokio::test]
+    async fn test_get_interface_from_sockaddr_dl() -> Result<()> {
+        let netlink = Netlink::new().await?;
         let interfaces = netlink.get_interfaces()?;
 
         // [正常系] 存在するインデックスでインターフェース取得
@@ -334,10 +348,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_get_interfaces() -> Result<()> {
+    #[tokio::test]
+    async fn test_get_interfaces() -> Result<()> {
         // [正常系] インターフェース一覧の取得
-        let netlink = Netlink::new()?;
+        let netlink = Netlink::new().await?;
         let interfaces = netlink.get_interfaces()?;
 
         // 最低1つはインターフェースが存在するはず（loopbackなど）
@@ -352,14 +366,14 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_get_route() -> Result<()> {
+    #[tokio::test]
+    async fn test_get_route() -> Result<()> {
         // [正常系] IPv4アドレスに対するルート取得
-        let netlink = Netlink::new()?;
+        let netlink = Netlink::new().await?;
 
         // ローカルホストへのルート取得をテスト
         let target_ip = Ipv4Addr::new(127, 0, 0, 1);
-        let result = netlink.get_route(target_ip);
+        let result = netlink.get_route(target_ip).await;
         assert!(result.is_ok());
         let route_entry = result.unwrap();
         assert_eq!(route_entry.to, IpAddr::V4(target_ip));
@@ -403,9 +417,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_parse_route_entry_from_rt_msg() -> Result<()> {
-        let netlink = Netlink::new()?;
+    #[tokio::test]
+    async fn test_parse_route_entry_from_rt_msg() -> Result<()> {
+        let netlink = Netlink::new().await?;
 
         // [正常系] RTAX_DSTのみの場合
         let mut rt_msg = rt_msg {
