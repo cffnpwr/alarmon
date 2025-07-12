@@ -62,6 +62,10 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 color-eyre = "0.6.3"
 futures = "0.3"
 console-subscriber = { version = "0.4.1", optional = true }
+netlink-packet-route = "0.24.0"
+netlink-packet-core = "0.7.0"
+caps = "0.5.5"
+sudo2 = "0.2.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.17.0"
