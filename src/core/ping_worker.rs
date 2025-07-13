@@ -424,9 +424,11 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (_tx1, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
         let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
         let src = Ipv4Addr::new(192, 168, 1, 100);
 
         let receiver = PingResponseReceiver {
@@ -508,9 +510,11 @@ mod tests {
         );
 
         let (_tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
         let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
         let src = Ipv4Addr::new(192, 168, 1, 100);
 
         let mut receiver = PingResponseReceiver {
@@ -726,10 +730,12 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
         let (tx2, _rx2) = mpsc::channel(100);
         let (ping_tx, ping_rx) = mpsc::channel(100);
 
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
         let src = Ipv4Addr::new(192, 168, 1, 100);
         let receiver = PingResponseReceiver {
             identifier,
@@ -794,10 +800,12 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (_tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
         let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
 
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
         let src = Ipv4Addr::new(192, 168, 1, 100);
         let mut receiver = PingResponseReceiver {
             identifier,
