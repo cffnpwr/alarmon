@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         {
             let err_msg = format!("Error has occurred in ping monitoring: {e}");
             ratatui::restore();
-            error!("{}", err_msg);
+            error!("{err_msg}");
         }
     });
 
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
             let err_msg = format!("Error has occurred in TUI: {e}");
             ratatui::restore();
-            error!("{}", err_msg);
+            error!("{err_msg}");
         }
     });
 
