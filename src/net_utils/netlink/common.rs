@@ -1,6 +1,8 @@
 use std::io;
 
 use fxhash::FxHashMap;
+#[cfg(target_os = "linux")]
+use netlink_packet_route::link::LinkLayerType;
 use nix::ifaddrs::getifaddrs;
 use nix::net::if_::{InterfaceFlags, if_nametoindex};
 use tcpip::ethernet::MacAddr;
@@ -20,20 +22,24 @@ pub enum NetlinkError {
     NoSuchInterfaceIdx(u32),
     #[error(transparent)]
     InvalidNetmask(#[from] IPv4NetmaskError),
-    #[error("Unsupported link type: {0}")]
-    UnsupportedLinkType(u8),
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     RTNetlinkError(#[from] rtnetlink::Error),
     #[cfg(target_os = "linux")]
     #[error("Failed to get route message")]
     FailedToGetRouteMessage,
+    #[cfg(target_os = "linux")]
+    #[error("Unsupported link type: {0}")]
+    UnsupportedLinkType(LinkLayerType),
     #[cfg(target_os = "macos")]
     #[error("PF_ROUTE send error: {0}")]
     PfRouteSendError(io::ErrorKind),
     #[cfg(target_os = "macos")]
     #[error("PF_ROUTE receive error: {0}")]
     PfRouteReceiveError(io::ErrorKind),
+    #[cfg(target_os = "macos")]
+    #[error("Unsupported link type: {0}")]
+    UnsupportedLinkType(u8),
 }
 
 impl Netlink {

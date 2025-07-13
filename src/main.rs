@@ -16,11 +16,9 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    prepare()?;
     #[cfg(all(debug_assertions, feature = "tokio-console"))]
     console_subscriber::init();
-    env_logger::init_from_env(Env::default().default_filter_or("info"));
+    env_logger::init_from_env(Env::default().default_filter_or("error"));
     color_eyre::install().map_err(|e| {
         error!("Failed to install color_eyre: {e}");
         anyhow::anyhow!("Failed to install color_eyre")
@@ -46,40 +44,20 @@ async fn main() -> Result<()> {
     });
 
     // TUIタスクを起動
-    // let config_for_tui = config.clone();
-    // let tui_handle = tokio::spawn(async move {
-    //     if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
-    //         let err_msg = format!("Error has occurred in TUI: {e}");
-    //         ratatui::restore();
-    //         error!("{}", err_msg);
-    //     }
-    // });
+    let config_for_tui = config.clone();
+    let tui_handle = tokio::spawn(async move {
+        if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
+            let err_msg = format!("Error has occurred in TUI: {e}");
+            ratatui::restore();
+            error!("{}", err_msg);
+        }
+    });
 
     // どちらかのタスクが終了するまで待機
     tokio::select! {
         _ = ping_handle => {},
-        // _ = tui_handle => {},
+        _ = tui_handle => {},
     }
 
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn prepare() -> anyhow::Result<()> {
-    use caps::{CapSet, Capability};
-    use sudo2::{running_as_root, running_as_suid};
-
-    if !(running_as_root() || running_as_suid())
-        && !caps::has_cap(None, CapSet::Permitted, Capability::CAP_NET_RAW)?
-    {
-        sudo2::escalate_with_env().map_err(|e| {
-            error!("Failed to escalate privileges: {e}");
-            anyhow::anyhow!("Failed to escalate privileges")
-        })?;
-    }
-
-    caps::set(None, CapSet::Permitted, &[Capability::CAP_NET_RAW].into())?;
-    caps::set(None, CapSet::Inheritable, &[Capability::CAP_NET_RAW].into())?;
-    caps::set(None, CapSet::Effective, &[Capability::CAP_NET_RAW].into())?;
     Ok(())
 }
