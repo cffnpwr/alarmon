@@ -33,6 +33,8 @@ pub async fn run_ping_monitoring(
 
         // LinkTypeを確認
         let netlink = Netlink::new().await?;
+        #[cfg(target_os = "linux")]
+        let mut netlink = netlink;
         let route = netlink.get_route(target_ip).await?;
 
         let ping_targets = ping_targets_by_ni
