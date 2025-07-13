@@ -44,7 +44,7 @@ tokio.workspace = true
 tcpip.workspace = true
 thiserror.workspace = true
 clap = { version = "4.5.41", features = ["derive"] }
-toml = "0.9.0"
+toml = "0.9.2"
 log = "0.4.27"
 env_logger = "0.11.8"
 chrono.workspace = true
@@ -64,8 +64,6 @@ futures = "0.3"
 console-subscriber = { version = "0.4.1", optional = true }
 netlink-packet-route = "0.24.0"
 netlink-packet-core = "0.7.0"
-caps = "0.5.5"
-sudo2 = "0.2.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.17.0"
