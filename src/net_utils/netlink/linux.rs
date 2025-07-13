@@ -112,7 +112,6 @@ impl Netlink {
                 let rtnetlink::Error::NetlinkError(err_msg) = e.clone() else {
                     return NetlinkError::RTNetlinkError(e);
                 };
-                dbg!(&err_msg);
                 if err_msg.code.map(|c| c.abs()) == NonZeroI32::new(nix::libc::ENODEV) {
                     NetlinkError::NoSuchInterfaceIdx(index)
                 } else {
@@ -123,7 +122,7 @@ impl Netlink {
         match link.header.link_layer_type {
             LinkLayerType::Ether => Ok(LinkType::Ethernet),
             LinkLayerType::Loopback => Ok(LinkType::Loopback),
-            LinkLayerType::Rawip => Ok(LinkType::RawIP),
+            LinkLayerType::Rawip | LinkLayerType::None => Ok(LinkType::RawIP),
             _ => Err(NetlinkError::UnsupportedLinkType(
                 link.header.link_layer_type,
             )),
