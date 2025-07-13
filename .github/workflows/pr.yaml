@@ -42,7 +42,7 @@ jobs:
     strategy:
       matrix:
         os:
-          # - ubuntu-latest
+          - ubuntu-latest
           - macos-latest
 
     steps:
@@ -120,7 +120,7 @@ jobs:
     strategy:
       matrix:
         os:
-          # - ubuntu-latest
+          - ubuntu-latest
           - macos-latest
     env:
       MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml:mise.cov.toml"
