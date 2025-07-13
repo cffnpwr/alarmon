@@ -1,35 +1,19 @@
-use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 
 use tcpip::ethernet::MacAddr;
-use tcpip::ip_cidr::{IPCIDR, IPv4NetmaskError};
-use thiserror::Error;
+use tcpip::ip_cidr::IPCIDR;
 
+pub use self::common::NetlinkError;
+#[cfg(target_os = "linux")]
+pub use self::linux::Netlink;
 #[cfg(target_os = "macos")]
 pub use self::macos::Netlink;
 
+mod common;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum NetlinkError {
-    #[error("Failed to get network interfaces: {0}")]
-    FailedToGetIfAddrs(#[source] nix::Error),
-    #[error("Failed to open socket: {0}")]
-    FailedToOpenSocket(io::ErrorKind),
-    #[error("No such network interface: index = {0}")]
-    NoSuchInterfaceIdx(u32),
-    #[error(transparent)]
-    InvalidNetmask(#[from] IPv4NetmaskError),
-    #[error("Unsupported link type: {0}")]
-    UnsupportedLinkType(u8),
-    #[cfg(target_os = "macos")]
-    #[error("PF_ROUTE send error: {0}")]
-    PfRouteSendError(io::ErrorKind),
-    #[cfg(target_os = "macos")]
-    #[error("PF_ROUTE receive error: {0}")]
-    PfRouteReceiveError(io::ErrorKind),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NetworkInterface {

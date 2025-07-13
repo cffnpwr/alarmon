@@ -40,13 +40,6 @@ struct rt_msg {
     attrs: [u8; ATTR_LEN],
 }
 
-struct NetworkInterfaceInner {
-    index: u32,
-    name: String,
-    mac_addr: MacAddr,
-    ip_addrs: Vec<IPCIDR>,
-}
-
 pub struct Netlink {
     pf_route_sock_fd: AsyncFd<Socket>,
 }
@@ -78,58 +71,6 @@ impl Netlink {
             .into_iter()
             .find(|iface| iface.index == index)
             .ok_or(NetlinkError::NoSuchInterfaceIdx(index))
-    }
-
-    fn get_interfaces(&self) -> Result<Vec<NetworkInterfaceInner>, NetlinkError> {
-        let ifaddrs = getifaddrs().map_err(NetlinkError::FailedToGetIfAddrs)?;
-        let mut interfaces: FxHashMap<String, NetworkInterfaceInner> = FxHashMap::default();
-
-        for ifaddr in ifaddrs {
-            let iface_name = ifaddr.interface_name.clone();
-
-            // 既存インターフェースを取得または新規作成
-            let iface = interfaces.entry(iface_name.clone()).or_insert_with(|| {
-                let index = if_nametoindex(iface_name.as_str())
-                    .map_err(NetlinkError::FailedToGetIfAddrs)
-                    .unwrap_or(0);
-
-                NetworkInterfaceInner {
-                    index,
-                    name: iface_name,
-                    mac_addr: MacAddr::default(),
-                    ip_addrs: Vec::new(),
-                }
-            });
-            let Some(address) = ifaddr.address else {
-                continue;
-            };
-
-            // MACアドレスの処理
-            if let Some(mac_addr) = address.as_link_addr() {
-                if let Some(mac_bytes) = mac_addr.addr() {
-                    iface.mac_addr = mac_bytes.into();
-                }
-                continue;
-            }
-
-            // IPv4アドレスの処理
-            let Some(ipv4_addr) = address.as_sockaddr_in() else {
-                continue;
-            };
-            let Some(netmask) = ifaddr.netmask else {
-                continue;
-            };
-            let Some(netmask_addr) = netmask.as_sockaddr_in() else {
-                continue;
-            };
-            let Ok(netmask) = IPv4Netmask::try_from(netmask_addr.ip()) else {
-                continue;
-            };
-            let cidr = IPCIDR::V4(IPv4CIDR::new(ipv4_addr.ip(), netmask));
-            iface.ip_addrs.push(cidr);
-        }
-
-        Ok(interfaces.into_values().collect())
     }
 
     /// 特定の宛先IPアドレスに対する最適ルートを取得
@@ -343,24 +284,6 @@ mod tests {
         assert!(result.is_err());
         if let Err(e) = result {
             assert!(matches!(e, NetlinkError::NoSuchInterfaceIdx(65535)));
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_interfaces() -> Result<()> {
-        // [正常系] インターフェース一覧の取得
-        let netlink = Netlink::new().await?;
-        let interfaces = netlink.get_interfaces()?;
-
-        // 最低1つはインターフェースが存在するはず（loopbackなど）
-        assert!(!interfaces.is_empty());
-
-        // 各インターフェースの基本的な構造を確認
-        for interface in interfaces {
-            assert!(!interface.name.is_empty());
-            assert!(interface.index > 0);
         }
 
         Ok(())
