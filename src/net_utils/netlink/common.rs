@@ -23,6 +23,7 @@ pub enum NetlinkError {
     #[error(transparent)]
     InvalidNetmask(#[from] IPv4NetmaskError),
     #[cfg(target_os = "linux")]
+    #[allow(clippy::enum_variant_names)]
     #[error(transparent)]
     RTNetlinkError(#[from] rtnetlink::Error),
     #[cfg(target_os = "linux")]
