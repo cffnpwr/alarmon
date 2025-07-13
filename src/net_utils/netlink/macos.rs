@@ -2,17 +2,12 @@ use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr};
 use std::{mem, process, slice};
 
-use fxhash::FxHashMap;
 use libc::{
     AF_INET, AF_LINK, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTA_IFP, RTAX_DST, RTAX_GATEWAY, RTAX_IFP,
     RTAX_MAX, RTF_GATEWAY, RTF_HOST, RTF_STATIC, RTF_UP, RTM_GET, RTM_VERSION, SOCK_RAW, c_int,
     in_addr, rt_msghdr, sockaddr, sockaddr_dl, sockaddr_in,
 };
-use nix::ifaddrs::getifaddrs;
-use nix::net::if_::if_nametoindex;
 use socket2::{Domain, Protocol, Socket, Type};
-use tcpip::ethernet::MacAddr;
-use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
@@ -59,18 +54,6 @@ impl Netlink {
         Ok(Netlink {
             pf_route_sock_fd: fd,
         })
-    }
-
-    fn get_interface_from_sockaddr_dl(
-        &self,
-        addr: &sockaddr_dl,
-    ) -> Result<NetworkInterfaceInner, NetlinkError> {
-        let index = addr.sdl_index as u32;
-        let ifaces = self.get_interfaces()?;
-        ifaces
-            .into_iter()
-            .find(|iface| iface.index == index)
-            .ok_or(NetlinkError::NoSuchInterfaceIdx(index))
     }
 
     /// 特定の宛先IPアドレスに対する最適ルートを取得
@@ -213,7 +196,7 @@ impl Netlink {
                 },
                 RTAX_IFP => {
                     let ifp = unsafe { *(sa as *const sockaddr as *const sockaddr_dl) };
-                    let iface = self.get_interface_from_sockaddr_dl(&ifp)?;
+                    let iface = self.get_interface_from_index(ifp.sdl_index as u32)?;
                     // LinkType判別ロジック
                     let linktype = match (ifp.sdl_type, linktype) {
                         (IFT_ETHER, _) => LinkType::Ethernet, // sockaddr_dl->sdl_typeがIFT_ETHERの場合
@@ -247,47 +230,6 @@ mod tests {
     use anyhow::Result;
 
     use super::*;
-
-    #[tokio::test]
-    async fn test_get_interface_from_sockaddr_dl() -> Result<()> {
-        let netlink = Netlink::new().await?;
-        let interfaces = netlink.get_interfaces()?;
-
-        // [正常系] 存在するインデックスでインターフェース取得
-        if let Some(first_interface) = interfaces.first() {
-            let addr = sockaddr_dl {
-                sdl_len: mem::size_of::<sockaddr_dl>() as u8,
-                sdl_family: AF_LINK as u8,
-                sdl_index: first_interface.index as u16,
-                sdl_type: 0,
-                sdl_nlen: 0,
-                sdl_alen: 0,
-                sdl_slen: 0,
-                sdl_data: [0; 12],
-            };
-            let interface = netlink.get_interface_from_sockaddr_dl(&addr)?;
-            assert_eq!(interface.index, first_interface.index);
-        }
-
-        // [異常系] 存在しないインデックスでNoSuchInterfaceIdxエラー
-        let addr = sockaddr_dl {
-            sdl_len: mem::size_of::<sockaddr_dl>() as u8,
-            sdl_family: AF_LINK as u8,
-            sdl_index: 65535,
-            sdl_type: 0,
-            sdl_nlen: 0,
-            sdl_alen: 0,
-            sdl_slen: 0,
-            sdl_data: [0; 12],
-        };
-        let result = netlink.get_interface_from_sockaddr_dl(&addr);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, NetlinkError::NoSuchInterfaceIdx(65535)));
-        }
-
-        Ok(())
-    }
 
     #[tokio::test]
     async fn test_get_route() -> Result<()> {
