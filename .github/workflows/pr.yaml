@@ -223,7 +223,11 @@ jobs:
         run: |
           files=(lcov-*.info)
           if [ ${#files[@]} -gt 1 ]; then
-            lcov --output-file merged-lcov.info "${files[@]/#/--add-tracefile }"
+            lcov_args=()
+            for file in "${files[@]}"; do
+              lcov_args+=(--add-tracefile "$file")
+            done
+            lcov --output-file merged-lcov.info "${lcov_args[@]}"
           else
             cp "${files[0]}" merged-lcov.info
           fi
