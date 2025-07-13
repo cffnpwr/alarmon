@@ -68,6 +68,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        ssh-key: ${{ secrets.DEPLOY_SECRET_KEY}}
 
     - name: Git configuration
       run: |
@@ -131,12 +132,15 @@ jobs:
 
     - name: Get updated crates
       id: get-updated-crates
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Get crate names from the previous step's output
         crate_names=($(echo '${{ steps.get-versions.outputs.versions }}' | jq -r 'keys[]'))
 
-        # Get changed files between main and release branches
-        changed_files=$(git diff --name-only origin/main...origin/release)
+        # Get changed files from the PR
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        changed_files=$(gh pr view $PR_NUMBER --json files --jq '.files[].path')
 
         # Find which crates have been updated
         updated_crates=()
@@ -209,7 +213,7 @@ jobs:
           fi
         done
 
-        echo "new-versions=$new_versions_json" >> $GITHUB_OUTPUT
+        echo "new-versions=$(echo "$new_versions_json" | jq -c .)" >> $GITHUB_OUTPUT
 
     - name: Check updated files
       id: check-updated-files
@@ -223,8 +227,6 @@ jobs:
 
     - name: Create version bump commit and push to main
       if: steps.check-updated-files.outputs.has-changes == 'true'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Switch to main branch
         git checkout main

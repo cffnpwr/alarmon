@@ -1,5 +1,7 @@
-use color_eyre::Result;
+use anyhow::Result;
 use config::Config;
+use env_logger::Env;
+use log::error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tui::models::UpdateMessage;
@@ -16,7 +18,11 @@ mod tui;
 async fn main() -> Result<()> {
     #[cfg(all(debug_assertions, feature = "tokio-console"))]
     console_subscriber::init();
-    color_eyre::install()?;
+    env_logger::init_from_env(Env::default().default_filter_or("error"));
+    color_eyre::install().map_err(|e| {
+        error!("Failed to install color_eyre: {e}");
+        anyhow::anyhow!("Failed to install color_eyre")
+    })?;
 
     let cli = Cli::parse();
     let config = Config::load(&cli.config)?;
@@ -25,23 +31,25 @@ async fn main() -> Result<()> {
     let (update_sender, update_receiver) = mpsc::channel::<UpdateMessage>(1000);
     let token = CancellationToken::new();
 
-    // 複数のタスクでconfigを使用するためクローンを作成
-    let config_for_ping = config.clone();
-    let config_for_tui = config.clone();
-
     // Ping監視タスクを起動
     let ping_token = token.clone();
+    let config_for_ping = config.clone();
     let ping_handle = tokio::spawn(async move {
         if let Err(e) = core::run_ping_monitoring(ping_token, &config_for_ping, update_sender).await
         {
-            eprintln!("Ping監視でエラーが発生しました: {e}");
+            let err_msg = format!("Error has occurred in ping monitoring: {e}");
+            ratatui::restore();
+            error!("{err_msg}");
         }
     });
 
     // TUIタスクを起動
+    let config_for_tui = config.clone();
     let tui_handle = tokio::spawn(async move {
         if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
-            eprintln!("TUIでエラーが発生しました: {e}");
+            let err_msg = format!("Error has occurred in TUI: {e}");
+            ratatui::restore();
+            error!("{err_msg}");
         }
     });
 

@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use fxhash::FxHashMap;
@@ -12,7 +13,9 @@ use crate::config::Config;
 use crate::core::pcap_worker::{PcapWorker, PingTargets};
 use crate::core::ping_worker::PingWorker;
 use crate::net_utils::arp_table::ArpTable;
-use crate::net_utils::netlink::NetlinkError;
+#[cfg(target_os = "linux")]
+use crate::net_utils::netlink::LinkType;
+use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
 use crate::tui::models::UpdateMessage;
 
 #[derive(Debug, Error)]
@@ -35,17 +38,6 @@ pub struct WorkerPool {
     traceroute_workers: Vec<TracerouteWorker>,
 }
 impl WorkerPool {
-    /// 指定されたターゲットIPに対する最適な送信元IPアドレスを取得
-    fn get_source_addr_for_target(
-        ping_targets: &PingTargets,
-        ping_target: &std::net::Ipv4Addr,
-    ) -> Result<std::net::Ipv4Addr, WorkerPoolError> {
-        ping_targets
-            .ni
-            .get_best_source_ip(ping_target)
-            .ok_or(WorkerPoolError::NoEthernetInterfaces)
-    }
-
     pub fn new(
         token: CancellationToken,
         arp_table: Arc<ArpTable>,
@@ -83,7 +75,8 @@ impl WorkerPool {
 
             // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
             for ping_target in &ping_targets.targets {
-                let src_addr = Self::get_source_addr_for_target(ping_targets, &ping_target.host)?;
+                let src_addr =
+                    Self::get_source_addr_for_target(&ping_targets.ni, &ping_target.host)?;
 
                 // Ping Workerを作成
                 let ping_worker = PingWorker::new(
@@ -161,6 +154,20 @@ impl WorkerPool {
 
         Ok(())
     }
+
+    /// 指定されたターゲットIPに対する最適な送信元IPアドレスを取得
+    fn get_source_addr_for_target(
+        ni: &NetworkInterface,
+        ping_target: &Ipv4Addr,
+    ) -> Result<Ipv4Addr, WorkerPoolError> {
+        #[cfg(target_os = "linux")]
+        if ni.linktype == LinkType::Loopback {
+            // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
+            return Ok(*ping_target);
+        }
+        ni.get_best_source_ip(ping_target)
+            .ok_or(WorkerPoolError::NoEthernetInterfaces)
+    }
 }
 
 #[cfg(test)]
@@ -227,8 +234,8 @@ mod tests {
         assert!(worker_pool.ping_workers.is_empty());
     }
 
-    #[test]
-    fn test_worker_pool_new_with_targets() {
+    #[tokio::test]
+    async fn test_worker_pool_new_with_targets() {
         // [正常系] ターゲットありでのWorkerPool作成
         let token = CancellationToken::new();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
@@ -269,8 +276,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_worker_pool_new_no_source_ip() {
+    #[tokio::test]
+    async fn test_worker_pool_new_no_source_ip() {
         // [異常系] 送信元IPアドレスが取得できない場合
         let token = CancellationToken::new();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
@@ -329,8 +336,8 @@ mod tests {
         assert!(result.unwrap().is_ok());
     }
 
-    #[test]
-    fn test_worker_pool_new_multiple_interfaces() {
+    #[tokio::test]
+    async fn test_worker_pool_new_multiple_interfaces() {
         // [正常系] 複数インターフェースでのWorkerPool作成
         let token = CancellationToken::new();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));

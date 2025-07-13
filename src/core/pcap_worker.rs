@@ -213,7 +213,17 @@ impl DatalinkFrameSender {
                 let frame = LoopbackFrame::new(AF_INET as u32, Bytes::from(pkt));
                 Bytes::from(frame)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(target_os = "linux")]
+            LinkType::Loopback => {
+                let ethernet_frame = EthernetFrame::new(
+                    &self.ni.mac_addr,
+                    &self.ni.mac_addr,
+                    &EtherType::IPv4,
+                    None,
+                    Bytes::from(pkt),
+                );
+                Bytes::try_from(ethernet_frame)?
+            }
             LinkType::Ethernet => {
                 // ARP解決
                 // 宛先IPアドレスが直接接続していなくても内部でNext Hopを解決する
@@ -269,24 +279,21 @@ impl DatalinkFrameReceiver {
 
                 loopback_frame.payload
             }
-            #[cfg(target_os = "macos")]
-            LinkType::Ethernet => {
-                // Ethernetフレームを解析
-                let ethernet_frame = match EthernetFrame::try_from(frame.as_ref()) {
-                    Ok(frame) => frame,
-                    Err(e) => {
-                        warn!("Failed to parse Ethernet frame: {e}");
-                        return Ok(()); // 解析失敗時は無視
-                    }
-                };
-                // IPv4パケットのみを処理
-                if ethernet_frame.ether_type != EtherType::IPv4 {
-                    debug!("EtherType is not IPv4: {}", ethernet_frame.ether_type);
+            #[cfg(target_os = "linux")]
+            LinkType::Loopback => match parse_ethernet_payload(frame.as_ref()) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    debug!("Failed to parse Ethernet payload: {e}");
                     return Ok(());
                 }
-
-                ethernet_frame.payload
-            }
+            },
+            LinkType::Ethernet => match parse_ethernet_payload(frame.as_ref()) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    debug!("Failed to parse Ethernet payload: {e}");
+                    return Ok(());
+                }
+            },
             LinkType::RawIP => {
                 // Raw IPフレームはそのまま使用
                 Bytes::copy_from_slice(frame.as_ref())
@@ -327,6 +334,18 @@ impl DatalinkFrameReceiver {
 
         Ok(())
     }
+}
+
+fn parse_ethernet_payload(frame: &[u8]) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
+    // Ethernetフレームを解析
+    let ethernet_frame = EthernetFrame::try_from(frame)?;
+
+    // IPv4パケットのみを処理
+    if ethernet_frame.ether_type != EtherType::IPv4 {
+        return Err("EtherType is not IPv4".into());
+    }
+
+    Ok(ethernet_frame.payload)
 }
 
 #[cfg(test)]

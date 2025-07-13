@@ -65,11 +65,25 @@ pub struct PingResponseReceiver {
     /// IPパケットを受信するためのチャネル
     rx: broadcast::Receiver<TimestampedPacket>,
 
+    /// IPパケットを送信するためのチャネル
+    /// Linuxの場合にのみ必要
+    #[cfg(target_os = "linux")]
+    tx: mpsc::Sender<IPv4Packet>,
+
     /// 送信通知受信用チャネル
     ping_rx: mpsc::Receiver<PendingPing>,
 
     /// UpdateMessage送信用チャネル
     update_tx: mpsc::Sender<UpdateMessage>,
+
+    /// ICMPメッセージを手動で返信する必要があるかどうか
+    /// Linuxの場合は自分自身にパケットを送信した場合にKernelのプロトコルスタックを通過しないので、Echo Reply Messageを作成して返す必要がある
+    #[cfg(target_os = "linux")]
+    self_reply: bool,
+
+    /// 送信元IPアドレス
+    #[cfg(target_os = "linux")]
+    src: Ipv4Addr,
 }
 
 pub struct PingWorker {
@@ -94,23 +108,27 @@ impl PingWorker {
 
         // 送信通知用チャネルを作成
         let (ping_tx, ping_rx) = mpsc::channel(1000);
-
         let sender = PingRequestSender {
             identifier: id,
             sequence_counter: 0,
             src,
             target,
             interval,
-            tx,
+            tx: tx.clone(),
             ping_tx,
         };
-
         let receiver = PingResponseReceiver {
             identifier: id,
             pending_pings: pendings,
             rx,
+            #[cfg(target_os = "linux")]
+            tx,
             ping_rx,
             update_tx,
+            #[cfg(target_os = "linux")]
+            self_reply: src == target, // 送信元IPアドレスと宛先IPアドレスが同じ == 自身に対してのICMP Echo Requestを送信
+            #[cfg(target_os = "linux")]
+            src, // 送信元IPアドレスを保持
         };
 
         Self {
@@ -224,41 +242,64 @@ impl PingResponseReceiver {
         let pkt = timestamped_pkt.packet;
         let received_at = timestamped_pkt.received_at;
         let icmp_msg = ICMPMessage::try_from(&pkt.payload)?;
-        if let ICMPMessage::EchoReply(msg) = icmp_msg {
-            let id = msg.identifier;
-            if id != self.identifier {
-                debug!(
-                    "Received Echo Reply with different identifier. Expected: {}, Received: {}",
-                    id, self.identifier
+        match icmp_msg {
+            ICMPMessage::EchoReply(msg) => {
+                let id = msg.identifier;
+                if id != self.identifier {
+                    debug!(
+                        "Received Echo Reply with different identifier. Expected: {}, Received: {}",
+                        id, self.identifier
+                    );
+                    return Ok(());
+                }
+
+                let seq = msg.sequence_number;
+                if !self.pending_pings.contains_key(&seq) {
+                    debug!("Received Echo Reply with unknown sequence number: {seq}");
+                    return Ok(());
+                }
+                let pending_ping = self.pending_pings.remove(&seq).unwrap();
+
+                let latency = received_at - pending_ping.sent_at;
+
+                // TUIへのUpdateMessage送信
+                let ping_update = PingUpdate {
+                    id: self.identifier,
+                    host: pending_ping.target_ip,
+                    success: true,
+                    latency: Some(Duration::milliseconds(latency.num_milliseconds())),
+                };
+
+                if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
+                    warn!("Failed to send ping update to TUI: {e}");
+                }
+            }
+            #[cfg(target_os = "linux")]
+            ICMPMessage::Echo(msg) if self.self_reply && pkt.dst == self.src => {
+                // Linuxの場合は自分自身にパケットを送信した場合にKernelのプロトコルスタックを通過しないので、Echo Reply Messageを作成して返す必要がある
+                let reply_msg =
+                    ICMPMessage::echo_reply(msg.identifier, msg.sequence_number, msg.data);
+                let icmp_bytes: Bytes = reply_msg.into();
+                let pkt = IPv4Packet::new(
+                    TypeOfService::default(),
+                    self.identifier,
+                    Flags::default(),
+                    0,
+                    64,
+                    Protocol::ICMP,
+                    self.src,
+                    self.src, // 自分自身に返信
+                    Vec::new(),
+                    icmp_bytes,
                 );
-                return Ok(());
+                self.tx
+                    .send(pkt)
+                    .await
+                    .map_err(|_| PingWorkerError::ChannelSendError)?;
             }
-
-            let seq = msg.sequence_number;
-            if !self.pending_pings.contains_key(&seq) {
-                debug!("Received Echo Reply with unknown sequence number: {seq}");
-                return Ok(());
+            msg => {
+                debug!("Received message is not Echo Reply: {}", msg.message_type());
             }
-            let pending_ping = self.pending_pings.remove(&seq).unwrap();
-
-            let latency = received_at - pending_ping.sent_at;
-
-            // TUIへのUpdateMessage送信
-            let ping_update = PingUpdate {
-                id: self.identifier,
-                host: pending_ping.target_ip,
-                success: true,
-                latency: Some(Duration::milliseconds(latency.num_milliseconds())),
-            };
-
-            if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
-                warn!("Failed to send ping update to TUI: {e}");
-            }
-        } else {
-            debug!(
-                "Received message is not Echo Reply: {}",
-                icmp_msg.message_type()
-            );
         }
 
         Ok(())
@@ -383,15 +424,25 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (_tx1, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
+        let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
+        let src = Ipv4Addr::new(192, 168, 1, 100);
 
         let receiver = PingResponseReceiver {
             identifier,
             pending_pings,
             rx,
+            #[cfg(target_os = "linux")]
+            tx,
             ping_rx,
             update_tx,
+            #[cfg(target_os = "linux")]
+            self_reply: false,
+            #[cfg(target_os = "linux")]
+            src,
         };
 
         assert_eq!(receiver.identifier, identifier);
@@ -459,15 +510,25 @@ mod tests {
         );
 
         let (_tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
+        let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
+        let src = Ipv4Addr::new(192, 168, 1, 100);
 
         let mut receiver = PingResponseReceiver {
             identifier,
             pending_pings,
             rx,
+            #[cfg(target_os = "linux")]
+            tx,
             ping_rx,
             update_tx,
+            #[cfg(target_os = "linux")]
+            self_reply: false,
+            #[cfg(target_os = "linux")]
+            src,
         };
 
         // ICMP Echo Replyパケットを作成
@@ -669,15 +730,25 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
+        let (tx2, _rx2) = mpsc::channel(100);
         let (ping_tx, ping_rx) = mpsc::channel(100);
 
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
+        let src = Ipv4Addr::new(192, 168, 1, 100);
         let receiver = PingResponseReceiver {
             identifier,
             pending_pings,
             rx,
+            #[cfg(target_os = "linux")]
+            tx: tx2,
             ping_rx,
             update_tx,
+            #[cfg(target_os = "linux")]
+            self_reply: false,
+            #[cfg(target_os = "linux")]
+            src,
         };
 
         // 送信通知を送る
@@ -729,15 +800,25 @@ mod tests {
         let identifier = 12345;
         let pending_pings = FxHashMap::default();
         let (_tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
+        let (tx, _rx2) = mpsc::channel(100);
         let (_ping_tx, ping_rx) = mpsc::channel(100);
 
         let (update_tx, _update_rx) = mpsc::channel(100);
+        #[cfg(target_os = "linux")]
+        let src = Ipv4Addr::new(192, 168, 1, 100);
         let mut receiver = PingResponseReceiver {
             identifier,
             pending_pings,
             rx,
+            #[cfg(target_os = "linux")]
+            tx,
             ping_rx,
             update_tx,
+            #[cfg(target_os = "linux")]
+            self_reply: false,
+            #[cfg(target_os = "linux")]
+            src,
         };
 
         // 不正なICMPペイロードのIPパケット

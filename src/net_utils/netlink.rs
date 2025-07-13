@@ -3,9 +3,15 @@ use std::net::{IpAddr, Ipv4Addr};
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
 
+pub use self::common::NetlinkError;
+#[cfg(target_os = "linux")]
+pub use self::linux::Netlink;
 #[cfg(target_os = "macos")]
-pub use self::macos::{Netlink, NetlinkError};
+pub use self::macos::Netlink;
 
+mod common;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 

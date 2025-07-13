@@ -1,21 +1,17 @@
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr};
-use std::{io, mem, process, slice};
+use std::{mem, process, slice};
 
-use fxhash::FxHashMap;
 use libc::{
     AF_INET, AF_LINK, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTA_IFP, RTAX_DST, RTAX_GATEWAY, RTAX_IFP,
     RTAX_MAX, RTF_GATEWAY, RTF_HOST, RTF_STATIC, RTF_UP, RTM_GET, RTM_VERSION, SOCK_RAW, c_int,
     in_addr, rt_msghdr, sockaddr, sockaddr_dl, sockaddr_in,
 };
-use nix::ifaddrs::getifaddrs;
-use nix::net::if_::if_nametoindex;
 use socket2::{Domain, Protocol, Socket, Type};
-use tcpip::ethernet::MacAddr;
-use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv4NetmaskError};
-use thiserror::Error;
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 
-use super::{LinkType, NetworkInterface, RouteEntry};
+use super::{LinkType, NetlinkError, NetworkInterface, RouteEntry};
 
 const RTM_MSGHDR_LEN: usize = mem::size_of::<rt_msghdr>();
 const ATTR_LEN: usize = 128;
@@ -39,112 +35,29 @@ struct rt_msg {
     attrs: [u8; ATTR_LEN],
 }
 
-struct NetworkInterfaceInner {
-    index: u32,
-    name: String,
-    mac_addr: MacAddr,
-    ip_addrs: Vec<IPCIDR>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum NetlinkError {
-    #[error("Failed to get network interfaces: {0}")]
-    FailedToGetIfAddrs(#[source] nix::Error),
-    #[error("Failed to open socket: {0}")]
-    FailedToOpenSocket(io::ErrorKind),
-    #[error("PF_ROUTE send error: {0}")]
-    PfRouteSendError(io::ErrorKind),
-    #[error("PF_ROUTE receive error: {0}")]
-    PfRouteReceiveError(io::ErrorKind),
-    #[error("No such network interface: index = {0}")]
-    NoSuchInterfaceIdx(u32),
-    #[error(transparent)]
-    InvalidNetmask(#[from] IPv4NetmaskError),
-    #[error("Unsupported link type: {0}")]
-    UnsupportedLinkType(u8),
-}
-
 pub struct Netlink {
-    pf_route_sock: Socket,
+    pf_route_sock_fd: AsyncFd<Socket>,
 }
 impl Netlink {
-    pub fn new() -> Result<Self, NetlinkError> {
-        let pf_route_sock = Socket::new(
+    // NOTE: Linuxとの互換性のため非同期関数
+    pub async fn new() -> Result<Self, NetlinkError> {
+        let sock = Socket::new(
             Domain::from(PF_ROUTE),
             Type::from(SOCK_RAW),
             Some(Protocol::from(0)),
         )
         .map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
+        sock.set_nonblocking(true)
+            .map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
+        let fd = AsyncFd::new(sock).map_err(|e| NetlinkError::FailedToOpenSocket(e.kind()))?;
 
-        Ok(Netlink { pf_route_sock })
-    }
-
-    fn get_interface_from_sockaddr_dl(
-        &self,
-        addr: &sockaddr_dl,
-    ) -> Result<NetworkInterfaceInner, NetlinkError> {
-        let index = addr.sdl_index as u32;
-        let ifaces = self.get_interfaces()?;
-        ifaces
-            .into_iter()
-            .find(|iface| iface.index == index)
-            .ok_or(NetlinkError::NoSuchInterfaceIdx(index))
-    }
-
-    fn get_interfaces(&self) -> Result<Vec<NetworkInterfaceInner>, NetlinkError> {
-        let ifaddrs = getifaddrs().map_err(NetlinkError::FailedToGetIfAddrs)?;
-        let mut interfaces: FxHashMap<String, NetworkInterfaceInner> = FxHashMap::default();
-
-        for ifaddr in ifaddrs {
-            let iface_name = ifaddr.interface_name.clone();
-
-            // 既存インターフェースを取得または新規作成
-            let iface = interfaces.entry(iface_name.clone()).or_insert_with(|| {
-                let index = if_nametoindex(iface_name.as_str())
-                    .map_err(NetlinkError::FailedToGetIfAddrs)
-                    .unwrap_or(0);
-
-                NetworkInterfaceInner {
-                    index,
-                    name: iface_name,
-                    mac_addr: MacAddr::default(),
-                    ip_addrs: Vec::new(),
-                }
-            });
-            let Some(address) = ifaddr.address else {
-                continue;
-            };
-
-            // MACアドレスの処理
-            if let Some(mac_addr) = address.as_link_addr() {
-                if let Some(mac_bytes) = mac_addr.addr() {
-                    iface.mac_addr = mac_bytes.into();
-                }
-                continue;
-            }
-
-            // IPv4アドレスの処理
-            let Some(ipv4_addr) = address.as_sockaddr_in() else {
-                continue;
-            };
-            let Some(netmask) = ifaddr.netmask else {
-                continue;
-            };
-            let Some(netmask_addr) = netmask.as_sockaddr_in() else {
-                continue;
-            };
-            let Ok(netmask) = IPv4Netmask::try_from(netmask_addr.ip()) else {
-                continue;
-            };
-            let cidr = IPCIDR::V4(IPv4CIDR::new(ipv4_addr.ip(), netmask));
-            iface.ip_addrs.push(cidr);
-        }
-
-        Ok(interfaces.into_values().collect())
+        Ok(Netlink {
+            pf_route_sock_fd: fd,
+        })
     }
 
     /// 特定の宛先IPアドレスに対する最適ルートを取得
-    pub fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
+    pub async fn get_route(&self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
         // PF_ROUTEで送信するデータ
         let mut rt_msg = rt_msg {
             hdr: rt_msghdr {
@@ -192,8 +105,13 @@ impl Netlink {
         // PF_ROUTEソケットにメッセージを送信
         let buf =
             unsafe { slice::from_raw_parts(&rt_msg as *const rt_msg as *const u8, rt_msg_len) };
-        self.pf_route_sock
-            .send(buf)
+
+        self.pf_route_sock_fd
+            .async_io(Interest::WRITABLE, |sock| {
+                sock.send(buf)?;
+                Ok(())
+            })
+            .await
             .map_err(|e| NetlinkError::PfRouteSendError(e.kind()))?;
 
         // PF_ROUTEソケットからの応答を受信
@@ -201,8 +119,9 @@ impl Netlink {
             slice::from_raw_parts_mut(&rt_msg as *const rt_msg as *mut MaybeUninit<u8>, rt_msg_len)
         };
         let recv_len = self
-            .pf_route_sock
-            .recv(buf)
+            .pf_route_sock_fd
+            .async_io(Interest::READABLE, |sock| sock.recv(buf))
+            .await
             .map_err(|e| NetlinkError::PfRouteReceiveError(e.kind()))?;
 
         self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len)
@@ -277,7 +196,7 @@ impl Netlink {
                 },
                 RTAX_IFP => {
                     let ifp = unsafe { *(sa as *const sockaddr as *const sockaddr_dl) };
-                    let iface = self.get_interface_from_sockaddr_dl(&ifp)?;
+                    let iface = self.get_interface_from_index(ifp.sdl_index as u32)?;
                     // LinkType判別ロジック
                     let linktype = match (ifp.sdl_type, linktype) {
                         (IFT_ETHER, _) => LinkType::Ethernet, // sockaddr_dl->sdl_typeがIFT_ETHERの場合
@@ -312,73 +231,14 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_get_interface_from_sockaddr_dl() -> Result<()> {
-        let netlink = Netlink::new()?;
-        let interfaces = netlink.get_interfaces()?;
-
-        // [正常系] 存在するインデックスでインターフェース取得
-        if let Some(first_interface) = interfaces.first() {
-            let addr = sockaddr_dl {
-                sdl_len: mem::size_of::<sockaddr_dl>() as u8,
-                sdl_family: AF_LINK as u8,
-                sdl_index: first_interface.index as u16,
-                sdl_type: 0,
-                sdl_nlen: 0,
-                sdl_alen: 0,
-                sdl_slen: 0,
-                sdl_data: [0; 12],
-            };
-            let interface = netlink.get_interface_from_sockaddr_dl(&addr)?;
-            assert_eq!(interface.index, first_interface.index);
-        }
-
-        // [異常系] 存在しないインデックスでNoSuchInterfaceIdxエラー
-        let addr = sockaddr_dl {
-            sdl_len: mem::size_of::<sockaddr_dl>() as u8,
-            sdl_family: AF_LINK as u8,
-            sdl_index: 65535,
-            sdl_type: 0,
-            sdl_nlen: 0,
-            sdl_alen: 0,
-            sdl_slen: 0,
-            sdl_data: [0; 12],
-        };
-        let result = netlink.get_interface_from_sockaddr_dl(&addr);
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(matches!(e, NetlinkError::NoSuchInterfaceIdx(65535)));
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_interfaces() -> Result<()> {
-        // [正常系] インターフェース一覧の取得
-        let netlink = Netlink::new()?;
-        let interfaces = netlink.get_interfaces()?;
-
-        // 最低1つはインターフェースが存在するはず（loopbackなど）
-        assert!(!interfaces.is_empty());
-
-        // 各インターフェースの基本的な構造を確認
-        for interface in interfaces {
-            assert!(!interface.name.is_empty());
-            assert!(interface.index > 0);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_route() -> Result<()> {
+    #[tokio::test]
+    async fn test_get_route() -> Result<()> {
         // [正常系] IPv4アドレスに対するルート取得
-        let netlink = Netlink::new()?;
+        let netlink = Netlink::new().await?;
 
         // ローカルホストへのルート取得をテスト
         let target_ip = Ipv4Addr::new(127, 0, 0, 1);
-        let result = netlink.get_route(target_ip);
+        let result = netlink.get_route(target_ip).await;
         assert!(result.is_ok());
         let route_entry = result.unwrap();
         assert_eq!(route_entry.to, IpAddr::V4(target_ip));
@@ -422,9 +282,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_parse_route_entry_from_rt_msg() -> Result<()> {
-        let netlink = Netlink::new()?;
+    #[tokio::test]
+    async fn test_parse_route_entry_from_rt_msg() -> Result<()> {
+        let netlink = Netlink::new().await?;
 
         // [正常系] RTAX_DSTのみの場合
         let mut rt_msg = rt_msg {

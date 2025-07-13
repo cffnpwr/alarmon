@@ -90,8 +90,10 @@ impl ArpTable {
         }
 
         // キャッシュにない、または期限切れの場合はARP解決を実行
-        let netlink = Netlink::new()?;
-        let best_route = netlink.get_route(target_ip)?;
+        let netlink = Netlink::new().await?;
+        #[cfg(target_os = "linux")]
+        let mut netlink = netlink;
+        let best_route = netlink.get_route(target_ip).await?;
         let ni = pcap::NetworkInterface::from(&best_route.interface);
 
         let mac_addr = resolve_arp_with_pcap(target_ip, ni, best_route, self.arp_timeout).await?;
