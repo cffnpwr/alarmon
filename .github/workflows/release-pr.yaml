@@ -213,7 +213,7 @@ jobs:
           fi
         done
 
-        echo "new-versions=$new_versions_json" >> $GITHUB_OUTPUT
+        echo "new-versions=$(echo "$new_versions_json" | jq -c .)" >> $GITHUB_OUTPUT
 
     - name: Check updated files
       id: check-updated-files
