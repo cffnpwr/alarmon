@@ -12,6 +12,15 @@ rust-version.workspace = true
 resolver = "3"
 members = ["pcap", "tcpip", "xtask"]
 
+[workspace.metadata.release]
+shared-version = false
+tag-name = "{{crate_name}}-v{{version}}"
+tag-message = "Release {{crate_name}} v{{version}}"
+publish = false
+push = false
+allow-branch = ["main", "release"]
+pre-release-replacements = []
+
 [workspace.package]
 edition = "2024"
 authors = ["cffnpwr <cffnpwr@gmail.com>"]

@@ -174,7 +174,7 @@ jobs:
         labels=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
 
         # Check if feat: commits exist in the PR
-        feat_commits=$(git log --oneline origin/main..HEAD | grep -c "^[a-f0-9]\+ feat:" || echo "0")
+        feat_commits=$(git log --oneline origin/main..HEAD | grep "^[a-f0-9]\+ feat:" | wc -l)
 
         # Create base JSON object
         new_versions_json="{}"
