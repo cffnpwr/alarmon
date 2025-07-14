@@ -12,7 +12,6 @@ concurrency:
 env:
   MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci-base.toml"
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 jobs:
   prepare-release:
@@ -20,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     if: contains(github.ref, 'refs/tags/alarmon-v')
     outputs:
-      calculation_data: ${{ steps.calculate.outputs.calculation_data }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,18 +43,15 @@ jobs:
         continue-on-error: true
 
       - name: Extract version from tag
-        id: calculate
+        id: version
         run: |
           # タグからバージョンを抽出
           TAG_NAME=${GITHUB_REF#refs/tags/}
           ALARMON_VERSION=${TAG_NAME#alarmon-v}
-
-          # 計算データを生成（簡単な形式）
-          calculation_data="{\"alarmon\":\"$ALARMON_VERSION\"}"
-          echo "calculation_data=$calculation_data" >> $GITHUB_OUTPUT
+          echo "version=$ALARMON_VERSION" >> $GITHUB_OUTPUT
 
   build:
-    name: Build (${{ matrix.name }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     needs: prepare-release
     strategy:
@@ -63,10 +59,16 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-14
-            name: arm64
           - target: x86_64-apple-darwin
             os: macos-13
-            name: amd64
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -74,6 +76,7 @@ jobs:
           fetch-depth: 0
 
       - name: Cache Homebrew packages
+        if: runner.os == 'macOS'
         uses: actions/cache@v4
         with:
           path: |
@@ -83,9 +86,39 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-brew-
 
-      - name: Install dependencies
+      - name: Cache apt packages
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/release.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
         run: |
-          brew install libpcap mold
+          brew install libpcap
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Determine architecture-specific settings
+          if [[ "${{ runner.arch }}" == "X64" ]]; then
+            MOLD_ARCH="x86_64"
+            EXTRA_PACKAGES=""
+          elif [[ "${{ runner.arch }}" == "ARM64" ]]; then
+            MOLD_ARCH="aarch64"
+            EXTRA_PACKAGES="musl-dev gcc-aarch64-linux-gnu"
+          fi
+          
+          # Install common packages
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y --no-install-recommends musl-tools linux-libc-dev libpcap-dev autoconf automake libtool ${EXTRA_PACKAGES}
+          
+          # Install latest mold from GitHub releases
+          MOLD_VERSION=$(curl -s https://api.github.com/repos/rui314/mold/releases/latest | jq -r '.tag_name')
+          wget -qO- "https://github.com/rui314/mold/releases/download/${MOLD_VERSION}/mold-${MOLD_VERSION#v}-${MOLD_ARCH}-linux.tar.gz" | sudo tar -xzf - -C /usr/local --strip-components=1
 
       - name: Install mise
         uses: jdx/mise-action@v2
@@ -97,6 +130,34 @@ jobs:
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
+
+      - name: Build libpcap for musl (Linux)
+        if: contains(matrix.target, 'musl')
+        run: |
+          # Determine architecture-specific settings
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            ARCH_HOST="x86_64-linux-musl"
+            ARCH_GNU="x86_64-linux-gnu"
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            ARCH_HOST="aarch64-linux-musl"
+            ARCH_GNU="aarch64-linux-gnu"
+          fi
+          
+          # Download and build libpcap for musl
+          wget -O libpcap-1.10.5.tar.gz https://github.com/the-tcpdump-group/libpcap/archive/libpcap-1.10.5.tar.gz
+          tar -xzf libpcap-1.10.5.tar.gz
+          cd libpcap-libpcap-1.10.5
+          
+          # Create symlinks for musl headers
+          sudo mkdir -p /usr/include/${ARCH_HOST}
+          sudo ln -sf /usr/include/linux /usr/include/${ARCH_HOST}/linux
+          sudo ln -sf /usr/include/asm-generic /usr/include/${ARCH_HOST}/asm-generic
+          sudo ln -sf /usr/include/${ARCH_GNU}/asm /usr/include/${ARCH_HOST}/asm
+          
+          # Generate configure script and build
+          ./autogen.sh
+          CC=musl-gcc CFLAGS="-I/usr/include -I/usr/include/${ARCH_GNU}" ./configure --host=${ARCH_HOST} --prefix=/tmp/musl --disable-shared --disable-rdma --disable-bluetooth --disable-usb --disable-netmap --disable-dbus --with-pcap=linux
+          make -j$(nproc) && make install
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -111,12 +172,26 @@ jobs:
 
       - name: Build binary
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            # macOS build (no mold)
+            cargo build --release --target ${{ matrix.target }}
+          elif [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            # Linux musl build (static)
+            RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-fuse-ld=mold" \
+            PKG_CONFIG_ALLOW_CROSS=1 \
+            LIBPCAP_LIBDIR="/tmp/musl/lib" \
+            PKG_CONFIG_PATH="/tmp/musl/lib/pkgconfig" \
+            cargo build --release --target ${{ matrix.target }}
+          else
+            # Linux glibc build (dynamic)
+            RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}-binary
+          name: ${{ matrix.target }}-binary
           path: target/${{ matrix.target }}/release/alarmon
 
   create-universal:
@@ -130,13 +205,13 @@ jobs:
       - name: Download arm64 binary
         uses: actions/download-artifact@v4
         with:
-          name: arm64-binary
+          name: aarch64-apple-darwin-binary
           path: binaries/arm64/
 
       - name: Download amd64 binary
         uses: actions/download-artifact@v4
         with:
-          name: amd64-binary
+          name: x86_64-apple-darwin-binary
           path: binaries/amd64/
 
       - name: Create Universal Binary
@@ -186,32 +261,22 @@ jobs:
 
       - name: Create release artifacts
         run: |
-          # バージョン計算結果を取得
-          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
-
           # alarmonクレートのバージョンを取得
-          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+          ALARMON_VERSION='${{ needs.prepare-release.outputs.version }}'
 
           # アーティファクトディレクトリを作成
           mkdir -p artifacts
 
-          # arm64アーティファクト
-          mkdir -p tmp/arm64
-          cp arm64-binary/alarmon tmp/arm64/
-          cp README.md LICENSE tmp/arm64/
-          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-arm64.tar.gz -C tmp/arm64 .
-
-          # amd64アーティファクト
-          mkdir -p tmp/amd64
-          cp amd64-binary/alarmon tmp/amd64/
-          cp README.md LICENSE tmp/amd64/
-          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-amd64.tar.gz -C tmp/amd64 .
-
-          # universalアーティファクト
-          mkdir -p tmp/universal
-          cp universal-binary/alarmon tmp/universal/
-          cp README.md LICENSE tmp/universal/
-          tar -czf artifacts/alarmon-v${ALARMON_VERSION}-macos-universal.tar.gz -C tmp/universal .
+          # ダウンロードされたバイナリディレクトリから各アーティファクトを作成
+          for binary_dir in *-binary; do
+            # バイナリディレクトリ名から target を抽出（例：aarch64-apple-darwin-binary → aarch64-apple-darwin）
+            target="${binary_dir%-binary}"
+            
+            mkdir -p "tmp/${target}"
+            cp "${binary_dir}/alarmon" "tmp/${target}/"
+            cp README.md LICENSE "tmp/${target}/"
+            tar -czf "artifacts/alarmon-v${ALARMON_VERSION}-${target}.tar.gz" -C "tmp/${target}" .
+          done
 
           # チェックサム生成
           cd artifacts
@@ -249,8 +314,7 @@ jobs:
           fi
 
           # バージョン情報を取得
-          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
-          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+          ALARMON_VERSION='${{ needs.prepare-release.outputs.version }}'
 
           # リリースノートを生成
           {
@@ -275,8 +339,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # バージョン情報を取得
-          CALCULATION_DATA='${{ needs.prepare-release.outputs.calculation_data }}'
-          ALARMON_VERSION=$(echo "$CALCULATION_DATA" | jq -r '.alarmon')
+          ALARMON_VERSION='${{ needs.prepare-release.outputs.version }}'
 
           # GitHubリリースを作成
           gh release create "alarmon-v${ALARMON_VERSION}" \
