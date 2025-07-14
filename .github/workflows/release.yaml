@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'alarmon-v*'
+      - "alarmon-v*"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -106,16 +106,14 @@ jobs:
           # Determine architecture-specific settings
           if [[ "${{ runner.arch }}" == "X64" ]]; then
             MOLD_ARCH="x86_64"
-            EXTRA_PACKAGES=""
           elif [[ "${{ runner.arch }}" == "ARM64" ]]; then
             MOLD_ARCH="aarch64"
-            EXTRA_PACKAGES="musl-dev gcc-aarch64-linux-gnu"
           fi
-          
+
           # Install common packages
           sudo apt-get -qq update
-          sudo apt-get -qq install -y --no-install-recommends musl-tools linux-libc-dev libpcap-dev autoconf automake libtool ${EXTRA_PACKAGES}
-          
+          sudo apt-get -qq install -y --no-install-recommends musl-tools musl-dev linux-libc-dev libpcap-dev autoconf automake libtool flex bison
+
           # Install latest mold from GitHub releases
           MOLD_VERSION=$(curl -s https://api.github.com/repos/rui314/mold/releases/latest | jq -r '.tag_name')
           wget -qO- "https://github.com/rui314/mold/releases/download/${MOLD_VERSION}/mold-${MOLD_VERSION#v}-${MOLD_ARCH}-linux.tar.gz" | sudo tar -xzf - -C /usr/local --strip-components=1
@@ -134,7 +132,7 @@ jobs:
       - name: Build libpcap for musl (Linux)
         if: contains(matrix.target, 'musl')
         run: |
-          # Determine architecture-specific settings
+          # アーキテクチャ別設定
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
             ARCH_HOST="x86_64-linux-musl"
             ARCH_GNU="x86_64-linux-gnu"
@@ -142,21 +140,32 @@ jobs:
             ARCH_HOST="aarch64-linux-musl"
             ARCH_GNU="aarch64-linux-gnu"
           fi
-          
-          # Download and build libpcap for musl
+
+          # libpcapソースのダウンロード
           wget -O libpcap-1.10.5.tar.gz https://github.com/the-tcpdump-group/libpcap/archive/libpcap-1.10.5.tar.gz
           tar -xzf libpcap-1.10.5.tar.gz
           cd libpcap-libpcap-1.10.5
-          
-          # Create symlinks for musl headers
+
+          # musl headers用のシンボリックリンク作成
           sudo mkdir -p /usr/include/${ARCH_HOST}
           sudo ln -sf /usr/include/linux /usr/include/${ARCH_HOST}/linux
           sudo ln -sf /usr/include/asm-generic /usr/include/${ARCH_HOST}/asm-generic
           sudo ln -sf /usr/include/${ARCH_GNU}/asm /usr/include/${ARCH_HOST}/asm
-          
-          # Generate configure script and build
+
+          # configureスクリプト生成とビルド
           ./autogen.sh
-          CC=musl-gcc CFLAGS="-I/usr/include -I/usr/include/${ARCH_GNU}" ./configure --host=${ARCH_HOST} --prefix=/tmp/musl --disable-shared --disable-rdma --disable-bluetooth --disable-usb --disable-netmap --disable-dbus --with-pcap=linux
+          CC=musl-gcc \
+          ./configure \
+            --host=${ARCH_HOST} \
+            --prefix=/tmp/musl \
+            --disable-shared \
+            --disable-rdma \
+            --disable-bluetooth \
+            --disable-usb \
+            --disable-netmap \
+            --disable-dbus \
+            --with-pcap=linux
+
           make -j$(nproc) && make install
 
       - name: Cache cargo registry
@@ -170,23 +179,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Build binary
+      - name: Build binary (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build binary (Linux musl)
+        if: contains(matrix.target, 'musl')
         run: |
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            # macOS build (no mold)
-            cargo build --release --target ${{ matrix.target }}
-          elif [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            # Linux musl build (static)
-            RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-fuse-ld=mold" \
-            PKG_CONFIG_ALLOW_CROSS=1 \
-            LIBPCAP_LIBDIR="/tmp/musl/lib" \
-            PKG_CONFIG_PATH="/tmp/musl/lib/pkgconfig" \
-            cargo build --release --target ${{ matrix.target }}
-          else
-            # Linux glibc build (dynamic)
-            RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-fuse-ld=mold" \
+          PKG_CONFIG_ALLOW_CROSS=1 \
+          LIBPCAP_LIBDIR="/tmp/musl/lib" \
+          PKG_CONFIG_PATH="/tmp/musl/lib/pkgconfig" \
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Build binary (Linux glibc)
+        if: runner.os == 'Linux' && !contains(matrix.target, 'musl')
+        run: |
+          RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+          cargo build --release --target ${{ matrix.target }}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -271,7 +281,7 @@ jobs:
           for binary_dir in *-binary; do
             # バイナリディレクトリ名から target を抽出（例：aarch64-apple-darwin-binary → aarch64-apple-darwin）
             target="${binary_dir%-binary}"
-            
+
             mkdir -p "tmp/${target}"
             cp "${binary_dir}/alarmon" "tmp/${target}/"
             cp README.md LICENSE "tmp/${target}/"
