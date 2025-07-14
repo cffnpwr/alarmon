@@ -174,7 +174,7 @@ jobs:
         labels=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
 
         # Check if feat: commits exist in the PR
-        feat_commits=$(git log --oneline origin/main..HEAD | grep -c "^[a-f0-9]\+ feat:" || echo "0")
+        feat_commits=$(git log --oneline origin/main..HEAD | grep -c "^[a-f0-9]\+ feat:" 2>/dev/null || echo "0")
 
         # Create base JSON object
         new_versions_json="{}"
@@ -233,7 +233,7 @@ jobs:
         git pull origin main
 
         # Create release commit for all workspace crates
-        cargo release commit --execute
+        cargo release commit --execute --no-confirm
 
         # Push to main
         git push origin main
