@@ -245,7 +245,7 @@ jobs:
       run: |
         # Merge the PR
         PR_NUMBER=${{ github.event.pull_request.number }}
-        gh pr merge $PR_NUMBER --merge --delete-branch
+        gh pr merge $PR_NUMBER --squash --delete-branch
 
     - name: Create release tags
       env:
