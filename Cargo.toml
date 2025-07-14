@@ -1,7 +1,7 @@
 [package]
 name = "alarmon"
 description = "Alive and Route Monitoring Tool"
-version = "1.0.0"
+version = "1.1.2"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -11,6 +11,16 @@ rust-version.workspace = true
 [workspace]
 resolver = "3"
 members = ["pcap", "tcpip", "xtask"]
+
+[workspace.metadata.release]
+shared-version = false
+tag-name = "{{crate_name}}-v{{version}}"
+tag-message = "Release {{crate_name}} v{{version}}"
+publish = false
+push = false
+allow-branch = ["main", "release", "feature/*", "bugfix/*"]
+pre-release-replacements = []
+dependent-version = "fix"
 
 [workspace.package]
 edition = "2024"
@@ -79,3 +89,11 @@ tokio-test = "0.4.4"
 
 [features]
 tokio-console = ["dep:console-subscriber"]
+
+[profile.release]
+debug = false
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true
+panic = "abort"
