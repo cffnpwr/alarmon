@@ -174,7 +174,7 @@ jobs:
         labels=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
 
         # Check if feat: commits exist in the PR
-        feat_commits=$(git log --oneline origin/main..HEAD | grep "^[a-f0-9]\+ feat:" | wc -l)
+        feat_commits=$(git log --oneline origin/main..HEAD | grep -c "^[a-f0-9]\+ feat:" || echo "0")
 
         # Create base JSON object
         new_versions_json="{}"
@@ -192,18 +192,18 @@ jobs:
             if [ "$crate" = "alarmon" ]; then
               # Main crate: use label-based versioning
               if echo "$labels" | grep -q "breaking\|major"; then
-                cargo release version --package "$crate" major --execute
+                cargo release version --package "$crate" major --execute --no-confirm
               elif echo "$labels" | grep -q "feature\|minor"; then
-                cargo release version --package "$crate" minor --execute
+                cargo release version --package "$crate" minor --execute --no-confirm
               else
-                cargo release version --package "$crate" patch --execute
+                cargo release version --package "$crate" patch --execute --no-confirm
               fi
             else
               # Other crates: use feat: commit detection
               if [ "$feat_commits" -gt 0 ]; then
-                cargo release version --package "$crate" minor --execute
+                cargo release version --package "$crate" minor --execute --no-confirm
               else
-                cargo release version --package "$crate" patch --execute
+                cargo release version --package "$crate" patch --execute --no-confirm
               fi
             fi
 
@@ -244,7 +244,7 @@ jobs:
       run: |
         # Merge the PR
         PR_NUMBER=${{ github.event.pull_request.number }}
-        gh pr merge $PR_NUMBER --rebase --delete-branch
+        gh pr merge $PR_NUMBER --merge --delete-branch
 
     - name: Create release tags
       env:
