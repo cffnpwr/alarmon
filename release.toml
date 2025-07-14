@@ -6,4 +6,4 @@ push = false
 allow-branch = ["main", "release", "feature/*", "bugfix/*"]
 pre-release-replacements = []
 release = false
-dependent-version = "ignore"
+dependent-version = "fix"
