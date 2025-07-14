@@ -79,3 +79,11 @@ tokio-test = "0.4.4"
 
 [features]
 tokio-console = ["dep:console-subscriber"]
+
+[profile.release]
+debug = false
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true
+panic = "abort"
