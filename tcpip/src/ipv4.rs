@@ -10,8 +10,7 @@ use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
 pub use self::flags::Flags;
-pub use self::protocol::Protocol;
-use self::protocol::ProtocolError;
+pub use self::protocol::{Protocol, ProtocolError};
 pub use self::type_of_service::TypeOfService;
 use crate::TryFromBytes;
 use crate::checksum::calculate_internet_checksum;
@@ -158,7 +157,7 @@ impl IPv4Packet {
 
     /// IPv4パケットの実際の長さを計算
     /// ヘッダー長 + オプション長 + ペイロード長
-    pub fn total_size(&self) -> usize {
+    pub fn total_length(&self) -> usize {
         let header_len = (self.internet_header_length as usize) * 4;
         header_len + self.payload.len()
     }

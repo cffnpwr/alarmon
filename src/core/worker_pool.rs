@@ -165,7 +165,7 @@ impl WorkerPool {
             // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
             return Ok(*ping_target);
         }
-        ni.get_best_source_ip(ping_target)
+        ni.get_best_source_ipv4(ping_target)
             .ok_or(WorkerPoolError::NoEthernetInterfaces)
     }
 }

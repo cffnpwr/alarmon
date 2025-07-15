@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProtocolError {
     #[error("Unsupported Protocol")]
     UnsupportedProtocol,

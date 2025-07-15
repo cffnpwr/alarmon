@@ -82,6 +82,11 @@ impl Message for ParameterProblemMessage {
     fn code(&self) -> u8 {
         0 // RFC 792: Parameter Problemのコードは常に0
     }
+
+    fn total_length(&self) -> usize {
+        // 8 bytes for header + original datagram length
+        8 + self.original_datagram.total_length()
+    }
 }
 
 impl TryFromBytes for ParameterProblemMessage {
@@ -124,7 +129,7 @@ impl TryFromBytes for ParameterProblemMessage {
 
 impl From<ParameterProblemMessage> for Bytes {
     fn from(value: ParameterProblemMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
+        let mut bytes = BytesMut::with_capacity(value.total_length());
 
         // Type (1 byte)
         bytes.extend_from_slice(&[MessageType::ParameterProblem.into()]);

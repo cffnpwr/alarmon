@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
@@ -24,21 +24,29 @@ pub struct NetworkInterface {
     pub linktype: LinkType,
 }
 impl NetworkInterface {
-    pub fn get_best_source_ip(&self, target_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
+    pub fn get_best_source_ip(&self, target_ip: &IpAddr) -> Option<IpAddr> {
+        match target_ip {
+            IpAddr::V4(ipv4_addr) => self.get_best_source_ipv4(ipv4_addr).map(IpAddr::V4),
+            IpAddr::V6(ipv6_addr) => self.get_best_source_ipv6(ipv6_addr).map(IpAddr::V6),
+        }
+    }
+
+    pub fn get_best_source_ipv4(&self, target_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
         let mut best_match: Option<(Ipv4Addr, u8)> = None;
 
         for ip_cidr in &self.ip_addrs {
-            let IPCIDR::V4(ipv4_cidr) = ip_cidr;
-            if ipv4_cidr.contains(target_ip) {
-                let prefix_length = ipv4_cidr.netmask.prefix_length();
+            if let IPCIDR::V4(ipv4_cidr) = ip_cidr {
+                if ipv4_cidr.contains(target_ip) {
+                    let prefix_length = ipv4_cidr.netmask.prefix_length();
 
-                match best_match {
-                    None => {
-                        best_match = Some((ipv4_cidr.address, prefix_length));
-                    }
-                    Some((_, current_prefix)) => {
-                        if prefix_length > current_prefix {
+                    match best_match {
+                        None => {
                             best_match = Some((ipv4_cidr.address, prefix_length));
+                        }
+                        Some((_, current_prefix)) => {
+                            if prefix_length > current_prefix {
+                                best_match = Some((ipv4_cidr.address, prefix_length));
+                            }
                         }
                     }
                 }
@@ -48,12 +56,47 @@ impl NetworkInterface {
         match best_match {
             Some((ip, _)) => Some(ip),
             None => {
-                if let Some(ip_cidr) = self.ip_addrs.first() {
-                    let IPCIDR::V4(ipv4_cidr) = ip_cidr;
-                    Some(ipv4_cidr.address)
-                } else {
-                    None
+                for ip_cidr in &self.ip_addrs {
+                    if let IPCIDR::V4(ipv4_cidr) = ip_cidr {
+                        return Some(ipv4_cidr.address);
+                    }
                 }
+                None
+            }
+        }
+    }
+
+    pub fn get_best_source_ipv6(&self, target_ip: &Ipv6Addr) -> Option<Ipv6Addr> {
+        let mut best_match: Option<(Ipv6Addr, u8)> = None;
+
+        for ip_cidr in &self.ip_addrs {
+            if let IPCIDR::V6(ipv6_cidr) = ip_cidr {
+                if ipv6_cidr.contains(target_ip) {
+                    let prefix_length = ipv6_cidr.prefix_length;
+
+                    match best_match {
+                        None => {
+                            best_match = Some((ipv6_cidr.address, prefix_length));
+                        }
+                        Some((_, current_prefix)) => {
+                            if prefix_length > current_prefix {
+                                best_match = Some((ipv6_cidr.address, prefix_length));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        match best_match {
+            Some((ip, _)) => Some(ip),
+            None => {
+                for ip_cidr in &self.ip_addrs {
+                    if let IPCIDR::V6(ipv6_cidr) = ip_cidr {
+                        return Some(ipv6_cidr.address);
+                    }
+                }
+                None
             }
         }
     }

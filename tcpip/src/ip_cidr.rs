@@ -1,21 +1,19 @@
 use std::fmt::Display;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::u128;
 
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IPCIDR {
     V4(IPv4CIDR),
-}
-impl Default for IPCIDR {
-    fn default() -> Self {
-        IPCIDR::V4(IPv4CIDR::default())
-    }
+    V6(IPv6CIDR),
 }
 impl Display for IPCIDR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IPCIDR::V4(cidr) => write!(f, "{cidr}"),
+            IPCIDR::V6(cidr) => write!(f, "{cidr}"),
         }
     }
 }
@@ -151,13 +149,55 @@ impl Display for IPv4CIDR {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum IPv6CIDRError {
+    #[error("Invalid prefix length. Must be between 0 and 128, but got {0}")]
+    InvalidPrefixLength(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IPv6CIDR {
+    pub address: Ipv6Addr,
+    pub prefix_length: u8,
+}
+impl IPv6CIDR {
+    pub fn new(address: Ipv6Addr, prefix_length: u8) -> Result<Self, IPv6CIDRError> {
+        if prefix_length > 128 {
+            return Err(IPv6CIDRError::InvalidPrefixLength(prefix_length));
+        }
+        Ok(IPv6CIDR {
+            address,
+            prefix_length,
+        })
+    }
+
+    pub fn contains(&self, ip: &Ipv6Addr) -> bool {
+        let mask = (u128::MAX << (128 - self.prefix_length)) as u128;
+        let network_addr = u128::from(self.address) & mask;
+        let target_network_addr = u128::from(*ip) & mask;
+        network_addr == target_network_addr
+    }
+}
+impl Default for IPv6CIDR {
+    fn default() -> Self {
+        IPv6CIDR {
+            address: Ipv6Addr::UNSPECIFIED,
+            prefix_length: 0,
+        }
+    }
+}
+impl Display for IPv6CIDR {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.address, self.prefix_length)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
 
-    // IPv4Netmask::prefix_lengthのテスト
     #[test]
     fn test_ipv4_netmask_prefix_length() {
         // [正常系] プレフィックス長の取得
@@ -165,7 +205,6 @@ mod tests {
         assert_eq!(netmask.prefix_length(), 24);
     }
 
-    // IPv4Netmask::into_addressのテスト
     #[test]
     fn test_ipv4_netmask_into_address() {
         // [正常系] IPv4Addrへの変換
@@ -178,7 +217,6 @@ mod tests {
         assert_eq!(addr, Ipv4Addr::new(255, 255, 0, 0));
     }
 
-    // IPv4Netmask::try_from_prefix_lengthのテスト
     #[test]
     fn test_ipv4_netmask_try_from_prefix_length_invalid() {
         // [異常系] 不正なプレフィックス長
@@ -186,7 +224,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // IPv4Netmask::try_from_ipv4_addrのテスト
     #[test]
     fn test_ipv4_netmask_try_from_ipv4_addr() {
         // [正常系] IPv4Addrからの変換
@@ -195,7 +232,6 @@ mod tests {
         assert_eq!(netmask.prefix_length(), 24);
     }
 
-    // IPv4CIDR::new_with_prefix_lengthのテスト
     #[test]
     fn test_ipv4_cidr_new_with_prefix_length() {
         // [正常系] 正常なプレフィックス長
@@ -213,7 +249,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // IPv4CIDR::fmtのテスト
     #[test]
     fn test_ipv4_cidr_display() {
         // [正常系] 表示形式
@@ -221,7 +256,6 @@ mod tests {
         assert_eq!(format!("{}", cidr), "192.168.1.0/24");
     }
 
-    // IPv4CIDR::containsのテスト
     #[test]
     fn test_ipv4_cidr_contains() {
         // [正常系] 同じネットワーク内のIPアドレス

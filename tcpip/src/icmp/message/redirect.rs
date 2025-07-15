@@ -121,6 +121,11 @@ impl Message for RedirectMessage {
     fn code(&self) -> u8 {
         self.code.into()
     }
+
+    fn total_length(&self) -> usize {
+        // 8 bytes for header + 4 bytes for gateway address + original datagram length
+        12 + self.original_datagram.total_length()
+    }
 }
 
 impl TryFromBytes for RedirectMessage {
@@ -155,7 +160,7 @@ impl TryFromBytes for RedirectMessage {
 
 impl From<RedirectMessage> for Bytes {
     fn from(value: RedirectMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
+        let mut bytes = BytesMut::with_capacity(value.total_length());
 
         // Type (1 byte)
         bytes.extend_from_slice(&[MessageType::Redirect.into()]);

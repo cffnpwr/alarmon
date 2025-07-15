@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut as _, Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -115,22 +115,27 @@ impl Message for EchoMessage {
     fn code(&self) -> u8 {
         0
     }
+
+    fn total_length(&self) -> usize {
+        // 8 bytes for header + data length
+        8 + self.data.len()
+    }
 }
 
 impl From<EchoMessage> for Bytes {
     fn from(value: EchoMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.data.len());
+        let mut bytes = BytesMut::with_capacity(value.total_length());
 
         // Type (1 byte)
-        bytes.extend_from_slice(&[value.msg_type()]);
+        bytes.put_u8(value.msg_type().into());
         // Code (1 byte)
-        bytes.extend_from_slice(&[value.code()]);
+        bytes.put_u8(value.code().into());
         // Checksum (2 bytes)
-        bytes.extend_from_slice(&value.checksum.to_be_bytes());
+        bytes.put_u16(value.checksum);
         // Identifier (2 bytes)
-        bytes.extend_from_slice(&value.identifier.to_be_bytes());
+        bytes.put_u16(value.identifier);
         // Sequence Number (2 bytes)
-        bytes.extend_from_slice(&value.sequence_number.to_be_bytes());
+        bytes.put_u16(value.sequence_number);
         // Data (variable length)
         bytes.extend_from_slice(&value.data);
 

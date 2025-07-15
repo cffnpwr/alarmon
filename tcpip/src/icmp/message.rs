@@ -5,6 +5,8 @@ pub mod redirect;
 pub mod time_exceeded;
 pub mod timestamp;
 
+use bytes::Bytes;
+
 pub use self::destination_unreachable::{
     DestinationUnreachableMessage, DestinationUnreachableMessageError,
 };
@@ -20,7 +22,7 @@ use crate::checksum::calculate_internet_checksum;
 /// 各ICMPメッセージタイプに共通するメッセージタイプとコード取得機能を提供
 pub trait Message
 where
-    Vec<u8>: for<'a> From<&'a Self>,
+    Bytes: for<'a> From<&'a Self>,
 {
     /// メッセージタイプを取得
     fn msg_type(&self) -> u8;
@@ -28,9 +30,12 @@ where
     /// メッセージコードを取得
     fn code(&self) -> u8;
 
+    /// メッセージの長さを取得
+    fn total_length(&self) -> usize;
+
     /// チェックサムを計算
     fn calculate_checksum(&self) -> u16 {
-        let data = Vec::<u8>::from(self);
+        let data = Bytes::from(self);
         calculate_internet_checksum(&data)
     }
 

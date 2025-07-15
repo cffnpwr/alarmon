@@ -5,8 +5,10 @@ pub mod arp;
 pub mod checksum;
 pub mod ethernet;
 pub mod icmp;
+pub mod icmpv6;
 pub mod ip_cidr;
 pub mod ipv4;
+pub mod ipv6;
 #[cfg(target_os = "macos")]
 pub mod loopback;
 

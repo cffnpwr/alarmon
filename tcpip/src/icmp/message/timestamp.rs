@@ -138,6 +138,11 @@ impl Message for TimestampMessage {
     fn code(&self) -> u8 {
         0
     }
+
+    fn total_length(&self) -> usize {
+        // 8 bytes for header + 4 bytes for each timestamp (3 timestamps * 4 bytes)
+        20
+    }
 }
 
 impl TryFromBytes for TimestampMessage {
@@ -176,7 +181,7 @@ impl TryFromBytes for TimestampMessage {
 
 impl From<TimestampMessage> for Bytes {
     fn from(value: TimestampMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(20);
+        let mut bytes = BytesMut::with_capacity(value.total_length());
 
         // Type (1 byte)
         bytes.extend_from_slice(&[value.msg_type()]);

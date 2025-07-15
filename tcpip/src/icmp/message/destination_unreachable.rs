@@ -1,6 +1,6 @@
 use std::fmt::{self, Display};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -75,34 +75,39 @@ impl TryFromBytes for DestinationUnreachableCode {
             ));
         }
 
-        Self::try_from(bytes[0])
-    }
-}
-impl TryFrom<&u8> for DestinationUnreachableCode {
-    type Error = DestinationUnreachableCodeError;
-
-    fn try_from(value: &u8) -> Result<Self, Self::Error> {
-        match *value {
+        match bytes[0] {
             0 => Ok(DestinationUnreachableCode::NetworkUnreachable),
             1 => Ok(DestinationUnreachableCode::HostUnreachable),
             2 => Ok(DestinationUnreachableCode::ProtocolUnreachable),
             3 => Ok(DestinationUnreachableCode::PortUnreachable),
             4 => Ok(DestinationUnreachableCode::FragmentationNeededAndDFSet),
             5 => Ok(DestinationUnreachableCode::SourceRouteFailed),
-            value => Err(DestinationUnreachableCodeError::InvalidValue(value)),
+            code => Err(DestinationUnreachableCodeError::InvalidValue(code)),
         }
+    }
+}
+impl TryFrom<&u8> for DestinationUnreachableCode {
+    type Error = DestinationUnreachableCodeError;
+
+    fn try_from(value: &u8) -> Result<Self, Self::Error> {
+        Self::try_from_bytes([*value])
     }
 }
 impl TryFrom<u8> for DestinationUnreachableCode {
     type Error = DestinationUnreachableCodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::try_from(&value)
+        Self::try_from_bytes([value])
     }
 }
 impl From<DestinationUnreachableCode> for u8 {
     fn from(value: DestinationUnreachableCode) -> Self {
         value as u8
+    }
+}
+impl From<&DestinationUnreachableCode> for u8 {
+    fn from(value: &DestinationUnreachableCode) -> Self {
+        *value as u8
     }
 }
 
@@ -287,18 +292,23 @@ impl Message for DestinationUnreachableMessage {
     fn code(&self) -> u8 {
         self.code.into()
     }
+
+    fn total_length(&self) -> usize {
+        // 8 bytes for header + original datagram length
+        8 + self.original_datagram.total_length()
+    }
 }
 
-impl From<DestinationUnreachableMessage> for Bytes {
-    fn from(value: DestinationUnreachableMessage) -> Self {
-        let mut bytes = BytesMut::with_capacity(8 + value.original_datagram.total_size());
+impl From<&DestinationUnreachableMessage> for Bytes {
+    fn from(value: &DestinationUnreachableMessage) -> Self {
+        let mut bytes = BytesMut::with_capacity(value.total_length());
 
         // Type (1 byte)
-        bytes.extend_from_slice(&[MessageType::DestinationUnreachable.into()]);
+        bytes.put_u8(MessageType::DestinationUnreachable.into());
         // Code (1 byte)
-        bytes.extend_from_slice(&[value.code.into()]);
+        bytes.put_u8(value.code.into());
         // Checksum (2 bytes)
-        bytes.extend_from_slice(&value.checksum.to_be_bytes());
+        bytes.put_u16(value.checksum);
         // Unused field (4 bytes)
         bytes.extend_from_slice(&Into::<[u8; 4]>::into(&value.unused));
         // Original datagram (variable length)
@@ -308,9 +318,9 @@ impl From<DestinationUnreachableMessage> for Bytes {
     }
 }
 
-impl From<&DestinationUnreachableMessage> for Bytes {
-    fn from(value: &DestinationUnreachableMessage) -> Self {
-        value.clone().into()
+impl From<DestinationUnreachableMessage> for Bytes {
+    fn from(value: DestinationUnreachableMessage) -> Self {
+        (&value).into()
     }
 }
 
