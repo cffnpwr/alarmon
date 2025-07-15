@@ -39,7 +39,6 @@ jobs:
           name: alarmon-release-note
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
         continue-on-error: true
 
       - name: Extract version from tag
