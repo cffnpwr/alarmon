@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use fxhash::FxHashMap;
@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::core::pcap_worker::{PcapWorker, PingTargets};
 use crate::core::ping_worker::PingWorker;
 use crate::net_utils::arp_table::ArpTable;
+use crate::net_utils::neighbor_discovery::NeighborCache;
 #[cfg(target_os = "linux")]
 use crate::net_utils::netlink::LinkType;
 use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
@@ -41,6 +42,7 @@ impl WorkerPool {
     pub fn new(
         token: CancellationToken,
         arp_table: Arc<ArpTable>,
+        neighbor_cache: Arc<NeighborCache>,
         cfg: &Config,
         targets: &FxHashMap<u32, PingTargets>,
         update_sender: mpsc::Sender<UpdateMessage>,
@@ -67,6 +69,7 @@ impl WorkerPool {
                 cfg,
                 ping_targets.ni.clone(),
                 arp_table.clone(),
+                neighbor_cache.clone(),
                 target_ips,
             )?;
             pcap_workers.push(pcap_result.worker);
@@ -158,23 +161,43 @@ impl WorkerPool {
     /// 指定されたターゲットIPに対する最適な送信元IPアドレスを取得
     fn get_source_addr_for_target(
         ni: &NetworkInterface,
-        ping_target: &Ipv4Addr,
-    ) -> Result<Ipv4Addr, WorkerPoolError> {
+        ping_target: &IpAddr,
+    ) -> Result<IpAddr, WorkerPoolError> {
         #[cfg(target_os = "linux")]
         if ni.linktype == LinkType::Loopback {
             // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
             return Ok(*ping_target);
         }
-        ni.get_best_source_ipv4(ping_target)
-            .ok_or(WorkerPoolError::NoEthernetInterfaces)
+
+        // IPv6の場合、より適切なsource addressを選択
+        match ping_target {
+            IpAddr::V6(_) => {
+                // IPv6の場合、優先的にグローバルユニキャストアドレスを選択
+                if let Some(preferred_addr) = ni.get_preferred_ipv6_address() {
+                    return Ok(IpAddr::V6(preferred_addr));
+                }
+                // フォールバック: 既存のロジック
+                ni.get_best_source_ip(ping_target)
+                    .ok_or(WorkerPoolError::NoEthernetInterfaces)
+            }
+            _ => {
+                // IPv4の場合は既存のロジック
+                ni.get_best_source_ip(ping_target)
+                    .ok_or(WorkerPoolError::NoEthernetInterfaces)
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::sync::Arc;
+    use std::time::Duration;
 
+    use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv6CIDR};
+    use tcpip::ipv6::ipv6_address::IPv6AddrExt;
+    use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -226,7 +249,15 @@ mod tests {
         let targets = FxHashMap::default();
         let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
+        let neighbor_cache = Arc::new(NeighborCache::new(&ArpConfig::default()));
+        let result = WorkerPool::new(
+            token,
+            arp_table,
+            neighbor_cache,
+            &config,
+            &targets,
+            update_tx,
+        );
 
         assert!(result.is_ok());
         let worker_pool = result.unwrap();
@@ -248,18 +279,26 @@ mod tests {
             targets: vec![
                 crate::core::pcap_worker::PingTarget {
                     id: 1,
-                    host: Ipv4Addr::new(192, 168, 1, 1),
+                    host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 },
                 crate::core::pcap_worker::PingTarget {
                     id: 2,
-                    host: Ipv4Addr::new(192, 168, 1, 2),
+                    host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
                 },
             ],
         };
         targets.insert(ni.index, ping_targets);
         let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
+        let neighbor_cache = Arc::new(NeighborCache::new(&ArpConfig::default()));
+        let result = WorkerPool::new(
+            token,
+            arp_table,
+            neighbor_cache,
+            &config,
+            &targets,
+            update_tx,
+        );
 
         // 注意: このテストは実際のPcap初期化を試行するため、環境によっては失敗する可能性がある
         // そのため、結果の成功/失敗両方を許容する
@@ -299,13 +338,21 @@ mod tests {
             ni: ni_no_ip,
             targets: vec![crate::core::pcap_worker::PingTarget {
                 id: 1,
-                host: Ipv4Addr::new(192, 168, 1, 1),
+                host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
             }],
         };
         targets.insert(1, ping_targets);
         let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
+        let neighbor_cache = Arc::new(NeighborCache::new(&ArpConfig::default()));
+        let result = WorkerPool::new(
+            token,
+            arp_table,
+            neighbor_cache,
+            &config,
+            &targets,
+            update_tx,
+        );
 
         // 注意: このテストも実際のPcap初期化を試行するため、
         // PcapErrorが先に発生する可能性がある
@@ -316,10 +363,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_pool_run() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] WorkerPool実行のテスト
         let token = CancellationToken::new();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
@@ -327,8 +370,16 @@ mod tests {
         let targets = FxHashMap::default(); // 空のターゲット
 
         let (update_tx, _update_rx) = mpsc::channel(100);
-        let worker_pool =
-            WorkerPool::new(token.clone(), arp_table, &config, &targets, update_tx).unwrap();
+        let neighbor_cache = Arc::new(NeighborCache::new(&ArpConfig::default()));
+        let worker_pool = WorkerPool::new(
+            token.clone(),
+            arp_table,
+            neighbor_cache,
+            &config,
+            &targets,
+            update_tx,
+        )
+        .unwrap();
 
         // 空のワーカープールは即座に完了する
         let result = timeout(Duration::from_millis(100), worker_pool.run()).await;
@@ -350,7 +401,7 @@ mod tests {
             ni: ni1.clone(),
             targets: vec![crate::core::pcap_worker::PingTarget {
                 id: 1,
-                host: Ipv4Addr::new(192, 168, 1, 1),
+                host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
             }],
         };
         targets.insert(ni1.index, ping_targets1);
@@ -373,18 +424,26 @@ mod tests {
             targets: vec![
                 crate::core::pcap_worker::PingTarget {
                     id: 2,
-                    host: Ipv4Addr::new(10, 0, 0, 1),
+                    host: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                 },
                 crate::core::pcap_worker::PingTarget {
                     id: 3,
-                    host: Ipv4Addr::new(10, 0, 0, 2),
+                    host: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                 },
             ],
         };
         targets.insert(ni2.index, ping_targets2);
         let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let result = WorkerPool::new(token, arp_table, &config, &targets, update_tx);
+        let neighbor_cache = Arc::new(NeighborCache::new(&ArpConfig::default()));
+        let result = WorkerPool::new(
+            token,
+            arp_table,
+            neighbor_cache,
+            &config,
+            &targets,
+            update_tx,
+        );
 
         // 環境によってはPcapエラーが発生する可能性があるが、
         // 成功した場合は正しい数のWorkerが作成されることを確認
@@ -413,15 +472,15 @@ mod tests {
             targets: vec![
                 crate::core::pcap_worker::PingTarget {
                     id: 1,
-                    host: Ipv4Addr::new(192, 168, 1, 1),
+                    host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 },
                 crate::core::pcap_worker::PingTarget {
                     id: 2,
-                    host: Ipv4Addr::new(192, 168, 1, 2),
+                    host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
                 },
                 crate::core::pcap_worker::PingTarget {
                     id: 3,
-                    host: Ipv4Addr::new(192, 168, 1, 3),
+                    host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)),
                 },
             ],
         };
@@ -446,5 +505,93 @@ mod tests {
             };
             assert_eq!(original_ping_id, (i + 1) as u16);
         }
+    }
+
+    #[test]
+    fn test_get_source_addr_for_target_ipv6() {
+        // [正常系] IPv6の場合のsource address選択
+
+        let interface = NetworkInterface {
+            index: 1,
+            name: "eth0".to_string(),
+            mac_addr: Default::default(),
+            ip_addrs: vec![
+                // リンクローカルアドレス
+                IPCIDR::V6(IPv6CIDR::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap()),
+                // グローバルユニキャストアドレス
+                IPCIDR::V6(
+                    IPv6CIDR::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 64).unwrap(),
+                ),
+            ],
+            linktype: LinkType::Ethernet,
+        };
+
+        let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
+        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
+
+        assert!(result.is_ok());
+        let src_addr = result.unwrap();
+
+        // グローバルユニキャストアドレスが選択されるはず
+        if let IpAddr::V6(addr) = src_addr {
+            use tcpip::ipv6::ipv6_address::IPv6AddrExt;
+            assert!(addr.is_global_unicast());
+            assert!(!addr.is_link_local());
+        } else {
+            panic!("Expected IPv6 address");
+        }
+    }
+
+    #[test]
+    fn test_get_source_addr_for_target_ipv6_link_local_only() {
+        // [正常系] リンクローカルアドレスのみの場合
+
+        let interface = NetworkInterface {
+            index: 1,
+            name: "eth0".to_string(),
+            mac_addr: Default::default(),
+            ip_addrs: vec![
+                // リンクローカルアドレスのみ
+                IPCIDR::V6(IPv6CIDR::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap()),
+            ],
+            linktype: LinkType::Ethernet,
+        };
+
+        let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
+        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
+
+        assert!(result.is_ok());
+        let src_addr = result.unwrap();
+
+        // リンクローカルアドレスが選択される（他に選択肢がない）
+        if let IpAddr::V6(addr) = src_addr {
+            assert!(addr.is_link_local());
+            assert!(!addr.is_global_unicast());
+        } else {
+            panic!("Expected IPv6 address");
+        }
+    }
+
+    #[test]
+    fn test_get_source_addr_for_target_ipv4() {
+        // [正常系] IPv4の場合のsource address選択
+
+        let interface = NetworkInterface {
+            index: 1,
+            name: "eth0".to_string(),
+            mac_addr: Default::default(),
+            ip_addrs: vec![IPCIDR::V4(IPv4CIDR::new(
+                Ipv4Addr::new(192, 168, 1, 100),
+                IPv4Netmask::try_from(Ipv4Addr::new(255, 255, 255, 0)).unwrap(),
+            ))],
+            linktype: LinkType::Ethernet,
+        };
+
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
+
+        assert!(result.is_ok());
+        let src_addr = result.unwrap();
+        assert_eq!(src_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
     }
 }

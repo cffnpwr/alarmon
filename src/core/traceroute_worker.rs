@@ -1,17 +1,19 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration as StdDuration;
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 use log::{debug, info, warn};
 use tcpip::icmp::{ICMPError, ICMPMessage, TimeExceededCode};
+use tcpip::icmpv6::{ICMPv6Error, ICMPv6Message};
+use tcpip::ip_packet::IPPacket;
 use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
+use tcpip::ipv6::IPv6Packet;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, timeout};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::pcap_worker::TimestampedPacket;
 use crate::net_utils::netlink::NetlinkError;
 use crate::tui::models::{TracerouteHop, TracerouteUpdate, UpdateMessage};
 
@@ -21,6 +23,10 @@ pub enum TracerouteWorkerError {
     NetworkFailed(#[from] NetlinkError),
     #[error(transparent)]
     IcmpError(#[from] ICMPError),
+    #[error(transparent)]
+    ICMPv6Error(#[from] ICMPv6Error),
+    #[error(transparent)]
+    IPv6Error(#[from] tcpip::ipv6::IPv6Error),
     #[error("Channel send error")]
     ChannelSendError,
 }
@@ -31,7 +37,7 @@ struct HopInfo {
     /// ホップ番号（TTL値）
     hop_number: u8,
     /// ホップのIPアドレス（タイムアウト時はNone）
-    ip_address: Option<Ipv4Addr>,
+    ip_address: Option<IpAddr>,
     /// 応答時間（タイムアウト時はNone）
     rtt: Option<Duration>,
     /// 応答を受信した時刻（タイムアウト時はNone）
@@ -55,17 +61,17 @@ pub struct TracerouteWorker {
     /// ICMP Echo Requestの送信元識別子
     identifier: u16,
     /// 送信元IPアドレス
-    src: Ipv4Addr,
+    src: IpAddr,
     /// 宛先IPアドレス
-    target: Ipv4Addr,
+    target: IpAddr,
     /// traceroute実行間隔
     interval: Duration,
     /// 最大ホップ数
     max_hops: u8,
     /// IPパケットを送信するためのチャネル
-    tx: mpsc::Sender<IPv4Packet>,
+    tx: mpsc::Sender<IPPacket>,
     /// IPパケットを受信するためのチャネル
-    rx: broadcast::Receiver<TimestampedPacket>,
+    rx: broadcast::Receiver<IPPacket>,
     /// UpdateMessage送信用チャネル
     update_tx: mpsc::Sender<UpdateMessage>,
 }
@@ -75,12 +81,12 @@ impl TracerouteWorker {
     pub fn new(
         token: CancellationToken,
         id: u16,
-        src: Ipv4Addr,
-        target: Ipv4Addr,
+        src: IpAddr,
+        target: IpAddr,
         interval: Duration,
         max_hops: u8,
-        tx: mpsc::Sender<IPv4Packet>,
-        rx: broadcast::Receiver<TimestampedPacket>,
+        tx: mpsc::Sender<IPPacket>,
+        rx: broadcast::Receiver<IPPacket>,
         update_tx: mpsc::Sender<UpdateMessage>,
     ) -> Self {
         Self {
@@ -191,6 +197,28 @@ impl TracerouteWorker {
     ) -> Result<TracerouteResponse, TracerouteWorkerError> {
         let sent_at = Utc::now();
 
+        match (self.src, self.target) {
+            (IpAddr::V4(src_v4), IpAddr::V4(target_v4)) => {
+                self.send_ipv4_traceroute(src_v4, target_v4, ttl, sent_at)
+                    .await
+            }
+            (IpAddr::V6(src_v6), IpAddr::V6(target_v6)) => {
+                self.send_ipv6_traceroute(src_v6, target_v6, ttl, sent_at)
+                    .await
+            }
+            _ => {
+                Err(TracerouteWorkerError::ChannelSendError) // IP版本不匹配
+            }
+        }
+    }
+
+    async fn send_ipv4_traceroute(
+        &mut self,
+        src: Ipv4Addr,
+        target: Ipv4Addr,
+        ttl: u8,
+        sent_at: DateTime<Utc>,
+    ) -> Result<TracerouteResponse, TracerouteWorkerError> {
         // ICMP Echo Requestを作成
         let icmp_msg = ICMPMessage::echo_request(self.identifier, ttl as u16, vec![0; 32]);
         let icmp_bytes: Bytes = icmp_msg.into();
@@ -203,19 +231,53 @@ impl TracerouteWorker {
             0,
             ttl,
             Protocol::ICMP,
-            self.src,
-            self.target,
+            src,
+            target,
             Vec::new(),
             icmp_bytes,
         );
 
         // パケットを送信
         self.tx
-            .send(pkt)
+            .send(IPPacket::V4(pkt))
             .await
             .map_err(|_| TracerouteWorkerError::ChannelSendError)?;
 
-        debug!("Sent ICMP Echo Request with TTL {} to {}", ttl, self.target);
+        debug!("Sent ICMP Echo Request with TTL {ttl} to {target}");
+
+        // 応答を待機（タイムアウト付き）
+        let timeout_duration = StdDuration::from_secs(3);
+
+        match timeout(timeout_duration, self.wait_for_response(ttl, sent_at)).await {
+            Ok(Ok(Some(response))) => Ok(response),
+            Ok(Ok(None)) => Ok(TracerouteResponse::Timeout { ttl }),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Ok(TracerouteResponse::Timeout { ttl }),
+        }
+    }
+
+    async fn send_ipv6_traceroute(
+        &mut self,
+        src: Ipv6Addr,
+        target: Ipv6Addr,
+        ttl: u8,
+        sent_at: DateTime<Utc>,
+    ) -> Result<TracerouteResponse, TracerouteWorkerError> {
+        // ICMPv6 Echo Requestを作成
+        let icmpv6_msg =
+            ICMPv6Message::echo_request(self.identifier, ttl as u16, vec![0; 32], src, target);
+        let icmpv6_bytes: Bytes = icmpv6_msg.into();
+
+        // IPv6パケットを作成、Hop LimitをTTLとして使用
+        let pkt = IPv6Packet::new(0, 0, Protocol::IPv6ICMP, ttl, src, target, icmpv6_bytes)?;
+
+        // パケットを送信
+        self.tx
+            .send(IPPacket::V6(pkt))
+            .await
+            .map_err(|_| TracerouteWorkerError::ChannelSendError)?;
+
+        debug!("Sent ICMPv6 Echo Request with Hop Limit {ttl} to {target}");
 
         // 応答を待機（タイムアウト付き）
         let timeout_duration = StdDuration::from_secs(3);
@@ -239,8 +301,9 @@ impl TracerouteWorker {
                 _ = self.token.cancelled() => {
                     return Ok(None);
                 }
-                Ok(timestamped_pkt) = self.rx.recv() => {
-                    if let Some(response) = self.process_received_packet(timestamped_pkt, expected_ttl, sent_at)? {
+                Ok(ip_pkt) = self.rx.recv() => {
+                    let received_at = Utc::now();
+                    if let Some(response) = self.process_received_packet(ip_pkt, expected_ttl, sent_at, received_at)? {
                         return Ok(Some(response));
                     }
                     // 関係ないパケットの場合は継続
@@ -252,12 +315,29 @@ impl TracerouteWorker {
     /// 受信したパケットを処理
     fn process_received_packet(
         &self,
-        timestamped_pkt: TimestampedPacket,
+        ip_pkt: IPPacket,
         expected_ttl: u8,
         sent_at: DateTime<Utc>,
+        received_at: DateTime<Utc>,
     ) -> Result<Option<TracerouteResponse>, TracerouteWorkerError> {
-        let pkt = timestamped_pkt.packet;
-        let received_at = timestamped_pkt.received_at;
+        match ip_pkt {
+            IPPacket::V4(ipv4_pkt) => {
+                self.process_ipv4_packet(ipv4_pkt, expected_ttl, sent_at, received_at)
+            }
+            IPPacket::V6(ipv6_pkt) => {
+                self.process_ipv6_packet(ipv6_pkt, expected_ttl, sent_at, received_at)
+            }
+        }
+    }
+
+    /// IPv4パケットを処理
+    fn process_ipv4_packet(
+        &self,
+        pkt: IPv4Packet,
+        expected_ttl: u8,
+        sent_at: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+    ) -> Result<Option<TracerouteResponse>, TracerouteWorkerError> {
         let icmp_msg = ICMPMessage::try_from(&pkt.payload)?;
         let rtt = received_at - sent_at;
 
@@ -275,7 +355,7 @@ impl TracerouteWorker {
                         {
                             let hop_info = HopInfo {
                                 hop_number: expected_ttl,
-                                ip_address: Some(pkt.src),
+                                ip_address: Some(pkt.src.into()),
                                 rtt: Some(rtt),
                                 received_at: Some(received_at),
                             };
@@ -287,12 +367,12 @@ impl TracerouteWorker {
             // Echo Reply応答（宛先到達）
             ICMPMessage::EchoReply(echo) => {
                 if echo.identifier == self.identifier
-                    && pkt.src == self.target
+                    && IpAddr::V4(pkt.src) == self.target
                     && echo.sequence_number == expected_ttl as u16
                 {
                     let hop_info = HopInfo {
                         hop_number: expected_ttl,
-                        ip_address: Some(pkt.src),
+                        ip_address: Some(pkt.src.into()),
                         rtt: Some(rtt),
                         received_at: Some(received_at),
                     };
@@ -301,6 +381,61 @@ impl TracerouteWorker {
             }
             _ => {
                 // その他のICMPメッセージは無視
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// IPv6パケットを処理
+    fn process_ipv6_packet(
+        &self,
+        pkt: IPv6Packet,
+        expected_ttl: u8,
+        sent_at: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+    ) -> Result<Option<TracerouteResponse>, TracerouteWorkerError> {
+        let icmpv6_msg = ICMPv6Message::try_from(&pkt.payload)?;
+        let rtt = received_at - sent_at;
+
+        match icmpv6_msg {
+            // Time Exceeded応答（中間ホップ）
+            ICMPv6Message::TimeExceeded(time_exceeded) => {
+                // 元のICMPv6パケットの識別子とsequence numberをチェック
+                if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
+                    ICMPv6Message::try_from(&time_exceeded.original_packet.payload)
+                {
+                    // 識別子とsequence number（Hop Limitとして使用）で照合
+                    if echo_req.identifier == self.identifier
+                        && echo_req.sequence_number == expected_ttl as u16
+                    {
+                        let hop_info = HopInfo {
+                            hop_number: expected_ttl,
+                            ip_address: Some(pkt.src.into()),
+                            rtt: Some(rtt),
+                            received_at: Some(received_at),
+                        };
+                        return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
+                    }
+                }
+            }
+            // Echo Reply応答（宛先到達）
+            ICMPv6Message::EchoReply(echo) => {
+                if echo.identifier == self.identifier
+                    && IpAddr::V6(pkt.src) == self.target
+                    && echo.sequence_number == expected_ttl as u16
+                {
+                    let hop_info = HopInfo {
+                        hop_number: expected_ttl,
+                        ip_address: Some(pkt.src.into()),
+                        rtt: Some(rtt),
+                        received_at: Some(received_at),
+                    };
+                    return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
+                }
+            }
+            _ => {
+                // その他のICMPv6メッセージは無視
             }
         }
 
@@ -348,13 +483,16 @@ mod tests {
         // [正常系] HopInfoの作成
         let hop_info = HopInfo {
             hop_number: 1,
-            ip_address: Some(Ipv4Addr::new(192, 168, 1, 1)),
+            ip_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             rtt: Some(Duration::milliseconds(10)),
             received_at: Some(Utc::now()),
         };
 
         assert_eq!(hop_info.hop_number, 1);
-        assert_eq!(hop_info.ip_address, Some(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(
+            hop_info.ip_address,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))
+        );
         assert_eq!(hop_info.rtt, Some(Duration::milliseconds(10)));
     }
 
@@ -362,8 +500,8 @@ mod tests {
     fn test_traceroute_worker_new() {
         // [正常系] TracerouteWorkerの作成
         let token = CancellationToken::new();
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let max_hops = 30;
         let (tx, _rx1) = mpsc::channel(100);
@@ -387,8 +525,8 @@ mod tests {
 
         // [正常系] TracerouteWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = chrono::Duration::seconds(1);
         let max_hops = 3;
         let (tx, _rx1) = mpsc::channel(100);
@@ -424,8 +562,8 @@ mod tests {
         use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
 
         let token = CancellationToken::new();
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let max_hops = 30;
         let (tx, _rx1) = mpsc::channel(100);
@@ -452,8 +590,14 @@ mod tests {
                 0,
                 1, // TTL=1（ルータで破棄される直前）
                 Protocol::ICMP,
-                src,
-                target,
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
+                match target {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 original_echo_bytes,
             );
@@ -470,22 +614,26 @@ mod tests {
                 64,
                 Protocol::ICMP,
                 Ipv4Addr::new(10, 0, 0, 1), // ルータのIP
-                src,
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 time_exceeded_bytes,
             );
 
-            let timestamped_response_packet = crate::core::pcap_worker::TimestampedPacket {
-                packet: response_packet,
-                received_at: chrono::Utc::now(),
-            };
+            let ip_response_packet = IPPacket::V4(response_packet);
+            let received_at = chrono::Utc::now();
             let result = worker
-                .process_received_packet(timestamped_response_packet, expected_ttl, sent_at)
+                .process_received_packet(ip_response_packet, expected_ttl, sent_at, received_at)
                 .unwrap();
             match result {
                 Some(TracerouteResponse::TimeExceeded(hop_info)) => {
                     assert_eq!(hop_info.hop_number, expected_ttl);
-                    assert_eq!(hop_info.ip_address, Some(Ipv4Addr::new(10, 0, 0, 1)));
+                    assert_eq!(
+                        hop_info.ip_address,
+                        Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
+                    );
                     assert!(hop_info.rtt.unwrap().num_milliseconds() >= 100);
                 }
                 _ => panic!("Expected TimeExceeded response"),
@@ -505,18 +653,22 @@ mod tests {
                 0,
                 64,
                 Protocol::ICMP,
-                target,
-                src,
+                match target {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 echo_reply_bytes,
             );
 
-            let timestamped_reply_packet = crate::core::pcap_worker::TimestampedPacket {
-                packet: reply_packet,
-                received_at: chrono::Utc::now(),
-            };
+            let ip_reply_packet = IPPacket::V4(reply_packet);
+            let received_at = chrono::Utc::now();
             let result = worker
-                .process_received_packet(timestamped_reply_packet, expected_ttl, sent_at)
+                .process_received_packet(ip_reply_packet, expected_ttl, sent_at, received_at)
                 .unwrap();
             match result {
                 Some(TracerouteResponse::EchoReply(hop_info)) => {
@@ -541,18 +693,22 @@ mod tests {
                 0,
                 64,
                 Protocol::ICMP,
-                target,
-                src,
+                match target {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 wrong_echo_reply_bytes,
             );
 
-            let timestamped_wrong_reply_packet = crate::core::pcap_worker::TimestampedPacket {
-                packet: wrong_reply_packet,
-                received_at: chrono::Utc::now(),
-            };
+            let ip_wrong_reply_packet = IPPacket::V4(wrong_reply_packet);
+            let received_at = chrono::Utc::now();
             let result = worker
-                .process_received_packet(timestamped_wrong_reply_packet, expected_ttl, sent_at)
+                .process_received_packet(ip_wrong_reply_packet, expected_ttl, sent_at, received_at)
                 .unwrap();
             assert!(result.is_none());
         }
@@ -570,18 +726,27 @@ mod tests {
                 0,
                 64,
                 Protocol::ICMP,
-                target,
-                src,
+                match target {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 wrong_seq_echo_reply_bytes,
             );
 
-            let timestamped_wrong_seq_reply_packet = crate::core::pcap_worker::TimestampedPacket {
-                packet: wrong_seq_reply_packet,
-                received_at: chrono::Utc::now(),
-            };
+            let ip_wrong_seq_reply_packet = IPPacket::V4(wrong_seq_reply_packet);
+            let received_at = chrono::Utc::now();
             let result = worker
-                .process_received_packet(timestamped_wrong_seq_reply_packet, expected_ttl, sent_at)
+                .process_received_packet(
+                    ip_wrong_seq_reply_packet,
+                    expected_ttl,
+                    sent_at,
+                    received_at,
+                )
                 .unwrap();
             assert!(result.is_none());
         }
@@ -597,8 +762,14 @@ mod tests {
                 0,
                 1,
                 Protocol::ICMP,
-                src,
-                target,
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
+                match target {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 dummy_icmp_bytes,
             );
@@ -618,17 +789,18 @@ mod tests {
                 64,
                 Protocol::ICMP,
                 Ipv4Addr::new(8, 8, 8, 8),
-                src,
+                match src {
+                    IpAddr::V4(addr) => addr,
+                    _ => panic!("Expected IPv4 address"),
+                },
                 Vec::new(),
                 other_icmp_bytes,
             );
 
-            let timestamped_other_packet = crate::core::pcap_worker::TimestampedPacket {
-                packet: other_packet,
-                received_at: chrono::Utc::now(),
-            };
+            let ip_other_packet = IPPacket::V4(other_packet);
+            let received_at = chrono::Utc::now();
             let result = worker
-                .process_received_packet(timestamped_other_packet, expected_ttl, sent_at)
+                .process_received_packet(ip_other_packet, expected_ttl, sent_at, received_at)
                 .unwrap();
             assert!(result.is_none());
         }

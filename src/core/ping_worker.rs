@@ -1,17 +1,19 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 use fxhash::FxHashMap;
 use log::{debug, info, warn};
 use tcpip::icmp::{ICMPError, ICMPMessage};
+use tcpip::icmpv6::{ICMPv6Error, ICMPv6Message};
+use tcpip::ip_packet::IPPacket;
 use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
+use tcpip::ipv6::IPv6Packet;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::pcap_worker::TimestampedPacket;
 use crate::net_utils::netlink::NetlinkError;
 use crate::tui::models::{PingUpdate, UpdateMessage};
 
@@ -21,13 +23,17 @@ pub enum PingWorkerError {
     NetworkFailed(#[from] NetlinkError),
     #[error(transparent)]
     IcmpError(#[from] ICMPError),
+    #[error(transparent)]
+    ICMPv6Error(#[from] ICMPv6Error),
+    #[error(transparent)]
+    IPv6Error(#[from] tcpip::ipv6::IPv6Error),
     #[error("Channel send error")]
     ChannelSendError,
 }
 
 #[derive(Debug)]
 struct PendingPing {
-    target_ip: Ipv4Addr,
+    target_ip: IpAddr,
     sequence_number: u16,
     sent_at: DateTime<Utc>,
 }
@@ -40,16 +46,16 @@ pub struct PingRequestSender {
     sequence_counter: u16,
 
     /// 送信元IPアドレス
-    src: Ipv4Addr,
+    src: IpAddr,
 
     /// 宛先IPアドレス
-    target: Ipv4Addr,
+    target: IpAddr,
 
     /// 送信間隔
     interval: Duration,
 
     /// IPパケットを送信するためのチャネル
-    tx: mpsc::Sender<IPv4Packet>,
+    tx: mpsc::Sender<IPPacket>,
 
     /// 送信通知用チャネル
     ping_tx: mpsc::Sender<PendingPing>,
@@ -63,12 +69,12 @@ pub struct PingResponseReceiver {
     pending_pings: FxHashMap<u16, PendingPing>,
 
     /// IPパケットを受信するためのチャネル
-    rx: broadcast::Receiver<TimestampedPacket>,
+    rx: broadcast::Receiver<IPPacket>,
 
     /// IPパケットを送信するためのチャネル
     /// Linuxの場合にのみ必要
     #[cfg(target_os = "linux")]
-    tx: mpsc::Sender<IPv4Packet>,
+    tx: mpsc::Sender<IPPacket>,
 
     /// 送信通知受信用チャネル
     ping_rx: mpsc::Receiver<PendingPing>,
@@ -83,7 +89,7 @@ pub struct PingResponseReceiver {
 
     /// 送信元IPアドレス
     #[cfg(target_os = "linux")]
-    src: Ipv4Addr,
+    src: IpAddr,
 }
 
 pub struct PingWorker {
@@ -97,11 +103,11 @@ impl PingWorker {
     pub fn new(
         token: CancellationToken,
         id: u16,
-        src: Ipv4Addr,
-        target: Ipv4Addr,
+        src: IpAddr,
+        target: IpAddr,
         interval: Duration,
-        tx: mpsc::Sender<IPv4Packet>,
-        rx: broadcast::Receiver<TimestampedPacket>,
+        tx: mpsc::Sender<IPPacket>,
+        rx: broadcast::Receiver<IPPacket>,
         update_tx: mpsc::Sender<UpdateMessage>,
     ) -> Self {
         let pendings = FxHashMap::default();
@@ -172,7 +178,6 @@ impl PingRequestSender {
         let sequence_number = self.sequence_counter;
         self.sequence_counter = self.sequence_counter.wrapping_add(1);
         let sent_at = Utc::now();
-        let icmp_msg = ICMPMessage::echo_request(self.identifier, sequence_number, vec![0; 32]);
         let pending_ping = PendingPing {
             target_ip: self.target,
             sequence_number,
@@ -185,6 +190,28 @@ impl PingRequestSender {
             .await
             .map_err(|_| PingWorkerError::ChannelSendError)?;
 
+        match (self.src, self.target) {
+            (IpAddr::V4(src_v4), IpAddr::V4(target_v4)) => {
+                self.send_ipv4_ping(src_v4, target_v4, sequence_number)
+                    .await?
+            }
+            (IpAddr::V6(src_v6), IpAddr::V6(target_v6)) => {
+                self.send_ipv6_ping(src_v6, target_v6, sequence_number)
+                    .await?
+            }
+            _ => return Err(PingWorkerError::ChannelSendError),
+        }
+
+        Ok(())
+    }
+
+    async fn send_ipv4_ping(
+        &mut self,
+        src: Ipv4Addr,
+        target: Ipv4Addr,
+        sequence_number: u16,
+    ) -> Result<(), PingWorkerError> {
+        let icmp_msg = ICMPMessage::echo_request(self.identifier, sequence_number, vec![0; 32]);
         let icmp_bytes: Bytes = icmp_msg.into();
         let pkt = IPv4Packet::new(
             TypeOfService::default(),
@@ -193,17 +220,35 @@ impl PingRequestSender {
             0,
             64,
             Protocol::ICMP,
-            self.src,
-            self.target,
+            src,
+            target,
             Vec::new(),
             icmp_bytes,
         );
+
         // IPパケットを送信チャネルに送る
         self.tx
-            .send(pkt)
+            .send(IPPacket::V4(pkt))
             .await
             .map_err(|_| PingWorkerError::ChannelSendError)?;
+        Ok(())
+    }
 
+    async fn send_ipv6_ping(
+        &mut self,
+        src: Ipv6Addr,
+        target: Ipv6Addr,
+        sequence_number: u16,
+    ) -> Result<(), PingWorkerError> {
+        let icmpv6_msg =
+            ICMPv6Message::echo_request(self.identifier, sequence_number, vec![0; 32], src, target);
+        let icmpv6_bytes: Bytes = icmpv6_msg.into();
+        let pkt = IPv6Packet::new(0, 0, Protocol::IPv6ICMP, 64, src, target, icmpv6_bytes)?;
+        // IPパケットを送信チャネルに送る
+        self.tx
+            .send(IPPacket::V6(pkt))
+            .await
+            .map_err(|_| PingWorkerError::ChannelSendError)?;
         Ok(())
     }
 }
@@ -219,8 +264,9 @@ impl PingResponseReceiver {
                     self.pending_pings.insert(pending_ping.sequence_number, pending_ping);
                 }
                 // IPパケットを受信
-                Ok(timestamped_pkt) = self.rx.recv() => {
-                    if let Err(e) = self.handle_recv_ip_packet(timestamped_pkt).await {
+                Ok(ip_pkt) = self.rx.recv() => {
+                    let received_at = Utc::now();
+                    if let Err(e) = self.handle_recv_ip_packet(ip_pkt, received_at).await {
                         warn!("Failed to handle received IP packet: {e}");
                     }
                 }
@@ -236,11 +282,20 @@ impl PingResponseReceiver {
 
     async fn handle_recv_ip_packet(
         &mut self,
-        timestamped_pkt: TimestampedPacket,
+        ip_pkt: IPPacket,
+        received_at: DateTime<Utc>,
     ) -> Result<(), PingWorkerError> {
-        // ICMP Echo Replyを受信
-        let pkt = timestamped_pkt.packet;
-        let received_at = timestamped_pkt.received_at;
+        match ip_pkt {
+            IPPacket::V4(ipv4_pkt) => self.handle_recv_ipv4_packet(ipv4_pkt, received_at).await,
+            IPPacket::V6(ipv6_pkt) => self.handle_recv_ipv6_packet(ipv6_pkt, received_at).await,
+        }
+    }
+
+    async fn handle_recv_ipv4_packet(
+        &mut self,
+        pkt: IPv4Packet,
+        received_at: DateTime<Utc>,
+    ) -> Result<(), PingWorkerError> {
         let icmp_msg = ICMPMessage::try_from(&pkt.payload)?;
         match icmp_msg {
             ICMPMessage::EchoReply(msg) => {
@@ -275,7 +330,7 @@ impl PingResponseReceiver {
                 }
             }
             #[cfg(target_os = "linux")]
-            ICMPMessage::Echo(msg) if self.self_reply && pkt.dst == self.src => {
+            ICMPMessage::Echo(msg) if self.self_reply && IpAddr::V4(pkt.dst) == self.src => {
                 // Linuxの場合は自分自身にパケットを送信した場合にKernelのプロトコルスタックを通過しないので、Echo Reply Messageを作成して返す必要がある
                 let reply_msg =
                     ICMPMessage::echo_reply(msg.identifier, msg.sequence_number, msg.data);
@@ -287,13 +342,86 @@ impl PingResponseReceiver {
                     0,
                     64,
                     Protocol::ICMP,
-                    self.src,
-                    self.src, // 自分自身に返信
+                    self.src.into(),
+                    self.src.into(), // 自分自身に返信
                     Vec::new(),
                     icmp_bytes,
                 );
                 self.tx
-                    .send(pkt)
+                    .send(IPPacket::V4(pkt))
+                    .await
+                    .map_err(|_| PingWorkerError::ChannelSendError)?;
+            }
+            msg => {
+                debug!("Received message is not Echo Reply: {}", msg.message_type());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_recv_ipv6_packet(
+        &mut self,
+        pkt: IPv6Packet,
+        received_at: DateTime<Utc>,
+    ) -> Result<(), PingWorkerError> {
+        let icmpv6_msg = ICMPv6Message::try_from(&pkt.payload)?;
+        match icmpv6_msg {
+            ICMPv6Message::EchoReply(msg) => {
+                let id = msg.identifier;
+                if id != self.identifier {
+                    debug!(
+                        "Received Echo Reply with different identifier. Expected: {}, Received: {}",
+                        id, self.identifier
+                    );
+                    return Ok(());
+                }
+
+                let seq = msg.sequence_number;
+                if !self.pending_pings.contains_key(&seq) {
+                    debug!("Received Echo Reply with unknown sequence number: {seq}");
+                    return Ok(());
+                }
+                let pending_ping = self.pending_pings.remove(&seq).unwrap();
+
+                let latency = received_at - pending_ping.sent_at;
+
+                // TUIへのUpdateMessage送信
+                let ping_update = PingUpdate {
+                    id: self.identifier,
+                    host: pending_ping.target_ip,
+                    success: true,
+                    latency: Some(Duration::milliseconds(latency.num_milliseconds())),
+                };
+
+                if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
+                    warn!("Failed to send ping update to TUI: {e}");
+                }
+            }
+            #[cfg(target_os = "linux")]
+            ICMPv6Message::EchoRequest(msg)
+                if self.self_reply && IpAddr::V6(pkt.dst) == self.src =>
+            {
+                // Linuxの場合は自分自身にパケットを送信した場合にKernelのプロトコルスタックを通過しないので、Echo Reply Messageを作成して返す必要がある
+                let reply_msg = ICMPv6Message::echo_reply(
+                    msg.identifier,
+                    msg.sequence_number,
+                    msg.data.clone(),
+                    self.src.into(),
+                    self.src.into(), // 自分自身に返信
+                );
+                let icmpv6_bytes: Bytes = reply_msg.into();
+                let pkt = IPv6Packet::new(
+                    0,
+                    0,
+                    Protocol::IPv6ICMP,
+                    64,
+                    self.src.into(),
+                    self.src.into(), // 自分自身に返信
+                    icmpv6_bytes,
+                )?;
+                self.tx
+                    .send(IPPacket::V6(pkt))
                     .await
                     .map_err(|_| PingWorkerError::ChannelSendError)?;
             }
@@ -351,7 +479,7 @@ mod tests {
     #[test]
     fn test_pending_ping() {
         // [正常系] PendingPingの作成
-        let target_ip = Ipv4Addr::new(192, 168, 1, 1);
+        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let sequence_number = 1234;
         let sent_at = Utc::now();
 
@@ -371,8 +499,8 @@ mod tests {
         // [正常系] PingWorkerの作成
         let token = CancellationToken::new();
         let id = 12345;
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
@@ -395,8 +523,8 @@ mod tests {
         // [正常系] PingRequestSenderの作成
         let identifier = 12345;
         let sequence_counter = 0;
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let (tx, _rx1) = mpsc::channel(100);
         let (ping_tx, _ping_rx) = mpsc::channel(100);
@@ -429,7 +557,7 @@ mod tests {
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
         #[cfg(target_os = "linux")]
-        let src = Ipv4Addr::new(192, 168, 1, 100);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
         let receiver = PingResponseReceiver {
             identifier,
@@ -454,8 +582,8 @@ mod tests {
         // [正常系] ICMP Echo Requestの送信
         let identifier = 12345;
         let sequence_counter = 0;
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let (tx, mut rx) = mpsc::channel(100);
         let (ping_tx, mut ping_rx) = mpsc::channel(100);
@@ -479,10 +607,15 @@ mod tests {
 
         // 送信されたIPパケットを確認
         let sent_packet = rx.recv().await.unwrap();
-        assert_eq!(sent_packet.src, src);
-        assert_eq!(sent_packet.dst, target);
-        assert_eq!(sent_packet.protocol, Protocol::ICMP);
-        assert_eq!(sent_packet.identification, identifier);
+        match sent_packet {
+            IPPacket::V4(pkt) => {
+                assert_eq!(IpAddr::V4(pkt.src), src);
+                assert_eq!(IpAddr::V4(pkt.dst), target);
+                assert_eq!(pkt.protocol, Protocol::ICMP);
+                assert_eq!(pkt.identification, identifier);
+            }
+            _ => panic!("Expected IPv4 packet"),
+        }
 
         // 送信通知を確認
         let pending_ping = ping_rx.recv().await.unwrap();
@@ -496,7 +629,7 @@ mod tests {
         let identifier = 12345;
         let sequence_number = 100;
         let mut pending_pings = FxHashMap::default();
-        let target_ip = Ipv4Addr::new(192, 168, 1, 1);
+        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let sent_at = Utc::now();
 
         // 送信済みPingを追加
@@ -515,7 +648,7 @@ mod tests {
         let (_ping_tx, ping_rx) = mpsc::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
         #[cfg(target_os = "linux")]
-        let src = Ipv4Addr::new(192, 168, 1, 100);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
         let mut receiver = PingResponseReceiver {
             identifier,
@@ -541,7 +674,7 @@ mod tests {
             0,
             64,
             Protocol::ICMP,
-            target_ip,
+            Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(192, 168, 1, 100),
             Vec::new(),
             icmp_bytes,
@@ -549,11 +682,8 @@ mod tests {
 
         // テスト実行
         let received_at = chrono::Utc::now();
-        let timestamped_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: ipv4_packet,
-            received_at,
-        };
-        let result = receiver.handle_recv_ip_packet(timestamped_packet).await;
+        let ip_packet = IPPacket::V4(ipv4_packet);
+        let result = receiver.handle_recv_ip_packet(ip_packet, received_at).await;
         assert_ok!(result);
 
         // 送信済みPingが削除されていることを確認
@@ -571,18 +701,15 @@ mod tests {
             0,
             64,
             Protocol::ICMP,
-            target_ip,
+            Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(192, 168, 1, 100),
             Vec::new(),
             wrong_icmp_bytes,
         );
 
-        let timestamped_wrong_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: wrong_packet,
-            received_at,
-        };
+        let ip_wrong_packet = IPPacket::V4(wrong_packet);
         let result = receiver
-            .handle_recv_ip_packet(timestamped_wrong_packet)
+            .handle_recv_ip_packet(ip_wrong_packet, received_at)
             .await;
         assert_ok!(result);
 
@@ -597,18 +724,15 @@ mod tests {
             0,
             64,
             Protocol::ICMP,
-            target_ip,
+            Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(192, 168, 1, 100),
             Vec::new(),
             unknown_icmp_bytes,
         );
 
-        let timestamped_unknown_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: unknown_packet,
-            received_at,
-        };
+        let ip_unknown_packet = IPPacket::V4(unknown_packet);
         let result = receiver
-            .handle_recv_ip_packet(timestamped_unknown_packet)
+            .handle_recv_ip_packet(ip_unknown_packet, received_at)
             .await;
         assert_ok!(result);
 
@@ -622,18 +746,15 @@ mod tests {
             0,
             64,
             Protocol::ICMP,
-            target_ip,
+            Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(192, 168, 1, 100),
             Vec::new(),
             echo_request_bytes,
         );
 
-        let timestamped_request_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: request_packet,
-            received_at,
-        };
+        let ip_request_packet = IPPacket::V4(request_packet);
         let result = receiver
-            .handle_recv_ip_packet(timestamped_request_packet)
+            .handle_recv_ip_packet(ip_request_packet, received_at)
             .await;
         assert_ok!(result);
     }
@@ -646,8 +767,8 @@ mod tests {
 
         // [正常系] PingWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = chrono::Duration::seconds(1);
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
@@ -683,8 +804,8 @@ mod tests {
         // [正常系] Echo Request送信ループのテスト
         let identifier = 12345;
         let sequence_counter = 0;
-        let src = Ipv4Addr::new(192, 168, 1, 100);
-        let target = Ipv4Addr::new(192, 168, 1, 1);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = chrono::Duration::milliseconds(50); // 短い間隔でテスト
         let (tx, mut rx) = mpsc::channel(100);
         let (ping_tx, mut ping_rx) = mpsc::channel(100);
@@ -736,7 +857,7 @@ mod tests {
 
         let (update_tx, _update_rx) = mpsc::channel(100);
         #[cfg(target_os = "linux")]
-        let src = Ipv4Addr::new(192, 168, 1, 100);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let receiver = PingResponseReceiver {
             identifier,
             pending_pings,
@@ -753,7 +874,7 @@ mod tests {
 
         // 送信通知を送る
         let pending_ping = PendingPing {
-            target_ip: Ipv4Addr::new(192, 168, 1, 1),
+            target_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
             sequence_number: 100,
             sent_at: Utc::now(),
         };
@@ -774,11 +895,8 @@ mod tests {
             Vec::new(),
             icmp_bytes,
         );
-        let timestamped_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: ipv4_packet,
-            received_at: chrono::Utc::now(),
-        };
-        tx.send(timestamped_packet).unwrap();
+        let ip_packet = IPPacket::V4(ipv4_packet);
+        tx.send(ip_packet).unwrap();
 
         // チャネルを閉じてループを終了させる
         drop(tx);
@@ -806,7 +924,7 @@ mod tests {
 
         let (update_tx, _update_rx) = mpsc::channel(100);
         #[cfg(target_os = "linux")]
-        let src = Ipv4Addr::new(192, 168, 1, 100);
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let mut receiver = PingResponseReceiver {
             identifier,
             pending_pings,
@@ -835,12 +953,9 @@ mod tests {
             Bytes::from(vec![0; 4]), // 不正に短いICMPペイロード
         );
 
-        let timestamped_invalid_packet = crate::core::pcap_worker::TimestampedPacket {
-            packet: invalid_packet,
-            received_at: chrono::Utc::now(),
-        };
+        let ip_invalid_packet = IPPacket::V4(invalid_packet);
         let result = receiver
-            .handle_recv_ip_packet(timestamped_invalid_packet)
+            .handle_recv_ip_packet(ip_invalid_packet, chrono::Utc::now())
             .await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), PingWorkerError::IcmpError(_)));
