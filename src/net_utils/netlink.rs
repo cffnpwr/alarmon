@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
+use tcpip::ipv6::ipv6_address::IPv6AddrExt;
 
 pub use self::common::NetlinkError;
 #[cfg(target_os = "linux")]
@@ -99,6 +100,60 @@ impl NetworkInterface {
                 None
             }
         }
+    }
+
+    /// IPv6アドレスの中からルーティングに適した最適なアドレスを選択
+    /// RFC 3484のSource Address Selection規則に基づいて優先順位を決定
+    pub fn get_preferred_ipv6_address(&self) -> Option<Ipv6Addr> {
+        let mut candidates: Vec<Ipv6Addr> = self
+            .ip_addrs
+            .iter()
+            .filter_map(|cidr| {
+                if let IPCIDR::V6(ipv6_cidr) = cidr {
+                    Some(ipv6_cidr.address)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // RFC 3484のSource Address Selection規則に基づいて優先順位を決定
+        candidates.sort_by(|a, b| {
+            self.ipv6_address_priority(a)
+                .cmp(&self.ipv6_address_priority(b))
+        });
+
+        candidates.into_iter().next()
+    }
+
+    /// IPv6アドレスの優先順位を返す（数値が小さいほど優先度が高い）
+    fn ipv6_address_priority(&self, addr: &Ipv6Addr) -> u8 {
+        // ループバックアドレスは除外
+        if addr.is_loopback() {
+            return 100;
+        }
+
+        // リンクローカルアドレスは最低優先度
+        if addr.is_link_local() {
+            return 90;
+        }
+
+        // グローバルユニキャストアドレスが最優先
+        if addr.is_global_unicast() {
+            return 1;
+        }
+
+        // ユニークローカルアドレスは2番目の優先度
+        if addr.is_unique_local() {
+            return 2;
+        }
+
+        // その他のアドレスは低優先度
+        80
     }
 }
 impl From<NetworkInterface> for pcap::NetworkInterface {

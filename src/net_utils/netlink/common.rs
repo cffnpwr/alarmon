@@ -6,7 +6,7 @@ use netlink_packet_route::link::LinkLayerType;
 use nix::ifaddrs::getifaddrs;
 use nix::net::if_::{InterfaceFlags, if_nametoindex};
 use tcpip::ethernet::MacAddr;
-use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv4NetmaskError};
+use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv4NetmaskError, IPv6CIDR};
 use thiserror::Error;
 
 use super::{Netlink, NetworkInterface};
@@ -84,20 +84,36 @@ impl Netlink {
             }
 
             // IPv4アドレスの処理
-            let Some(ipv4_addr) = address.as_sockaddr_in() else {
-                continue;
-            };
-            let Some(netmask) = ifaddr.netmask else {
-                continue;
-            };
-            let Some(netmask_addr) = netmask.as_sockaddr_in() else {
-                continue;
-            };
-            let Ok(netmask) = IPv4Netmask::try_from(netmask_addr.ip()) else {
-                continue;
-            };
-            let cidr = IPCIDR::V4(IPv4CIDR::new(ipv4_addr.ip(), netmask));
-            iface.ip_addrs.push(cidr);
+            if let Some(ipv4_addr) = address.as_sockaddr_in() {
+                let Some(netmask) = ifaddr.netmask else {
+                    continue;
+                };
+                let Some(netmask_addr) = netmask.as_sockaddr_in() else {
+                    continue;
+                };
+                let Ok(netmask) = IPv4Netmask::try_from(netmask_addr.ip()) else {
+                    continue;
+                };
+                let cidr = IPCIDR::V4(IPv4CIDR::new(ipv4_addr.ip(), netmask));
+                iface.ip_addrs.push(cidr);
+            }
+
+            // IPv6アドレスの処理
+            if let Some(ipv6_addr) = address.as_sockaddr_in6() {
+                let Some(netmask) = ifaddr.netmask else {
+                    continue;
+                };
+                let Some(netmask_addr) = netmask.as_sockaddr_in6() else {
+                    continue;
+                };
+                let prefix_length =
+                    u128::from_be_bytes(netmask_addr.ip().octets()).trailing_zeros() as u8;
+                let cidr = IPCIDR::V6(
+                    IPv6CIDR::new(ipv6_addr.ip(), prefix_length)
+                        .expect("prefix length should be valid"),
+                );
+                iface.ip_addrs.push(cidr);
+            }
         }
 
         Ok(interfaces.into_values().collect())

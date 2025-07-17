@@ -1,17 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration as StdDuration, Instant};
 
+use bytes::Bytes;
 use chrono::Duration;
 use fxhash::FxHashMap;
 use parking_lot::RwLock;
 use pcap::PcapError;
 use tcpip::arp::{ARPPacket, ARPPacketInner, Operation};
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError, MacAddr, MacAddrError};
-use tcpip::ip_cidr::IPCIDR;
 use thiserror::Error;
 use tokio::time::timeout;
 
-use super::netlink::{Netlink, NetlinkError, NetworkInterface, RouteEntry};
+use super::netlink::{Netlink, NetlinkError, RouteEntry};
 use crate::config::ArpConfig;
 
 #[derive(Debug, Error)]
@@ -72,14 +72,15 @@ impl ArpTable {
     /// テスト用ヘルパー関数: ARPテーブルに直接エントリを追加する
     ///
     /// この関数はテスト専用で、実際のARP解決をバイパスして
-    /// 指定されたIPアドレスとMACアドレスのマッピングを直接ARPテーブルに追加します。
+    /// 指定されたIPアドレスとMACアドレスのマッピングを直接ARPテーブルに追加
     #[cfg(test)]
     pub fn insert_for_test(&self, ip: Ipv4Addr, mac: MacAddr) {
         let mut entries = self.entries.write();
         entries.insert(ip, ArpEntry::new(mac, self.default_ttl));
     }
+
     pub async fn get_or_resolve(&self, target_ip: Ipv4Addr) -> Result<MacAddr, ArpTableError> {
-        // まず読み取りロックでキャッシュを確認
+        // 読み取りロックでキャッシュを確認
         {
             let entries = self.entries.read();
             if let Some(entry) = entries.get(&target_ip) {
@@ -93,7 +94,7 @@ impl ArpTable {
         let netlink = Netlink::new().await?;
         #[cfg(target_os = "linux")]
         let mut netlink = netlink;
-        let best_route = netlink.get_route(target_ip).await?;
+        let best_route = netlink.get_route(target_ip.into()).await?;
         let ni = pcap::NetworkInterface::from(&best_route.interface);
 
         let mac_addr = resolve_arp_with_pcap(target_ip, ni, best_route, self.arp_timeout).await?;
@@ -124,7 +125,12 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
     };
 
     // インターフェースから送信元IPを取得
-    let src_ip = get_source_ip(&best_route.interface, target_ip)?;
+    let src_ip = best_route
+        .interface
+        .get_best_source_ipv4(&target_ip)
+        .ok_or(ArpTableError::NoIpv4Address(
+            best_route.interface.name.clone(),
+        ))?;
 
     // インターフェースでパケットキャプチャを開始
     let cap = pcap_interface.open(false)?;
@@ -132,7 +138,7 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
     let mut receiver = cap.receiver;
 
     // ARPリクエストパケットを作成
-    let target_mac = MacAddr::try_from("00:00:00:00:00:00")?;
+    let target_mac = MacAddr::UNSPECIFIED;
     let arp_packet = ARPPacketInner::new(
         Operation::Request,
         best_route.interface.mac_addr,
@@ -142,7 +148,7 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
     );
 
     // Ethernetフレームを作成
-    let broadcast_mac = MacAddr::try_from("ff:ff:ff:ff:ff:ff")?;
+    let broadcast_mac = MacAddr::BROADCAST;
     let ethernet_frame = EthernetFrame::new(
         &best_route.interface.mac_addr,
         &broadcast_mac,
@@ -153,7 +159,7 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
 
     // ARPリクエストを送信
     let frame_bytes =
-        Vec::<u8>::try_from(ethernet_frame).map_err(ArpTableError::FrameConversionError)?;
+        Bytes::try_from(ethernet_frame).map_err(ArpTableError::FrameConversionError)?;
     sender
         .send_bytes(&frame_bytes)
         .await
@@ -195,31 +201,16 @@ async fn resolve_arp_with_pcap<P: pcap::Pcap>(
     }
 }
 
-fn get_source_ip(
-    interface: &NetworkInterface,
-    _target_ip: Ipv4Addr,
-) -> Result<Ipv4Addr, ArpTableError> {
-    // インターフェースの最初のIPv4アドレスを使用
-    for ip_cidr in &interface.ip_addrs {
-        #[allow(irrefutable_let_patterns)]
-        if let IPCIDR::V4(ipv4_cidr) = ip_cidr {
-            return Ok(ipv4_cidr.address);
-        }
-    }
-
-    Err(ArpTableError::NoIpv4Address(interface.name.clone()))
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use async_trait::async_trait;
     use pcap::{Channel, DataLinkReceiver, DataLinkSender, Pcap};
-    use tcpip::ip_cidr::IPv4CIDR;
+    use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
 
     use super::*;
-    use crate::net_utils::netlink::LinkType;
+    use crate::net_utils::netlink::{LinkType, NetworkInterface};
 
     // テスト用のモック構造体
     struct MockPcap {
@@ -280,7 +271,6 @@ mod tests {
         }
     }
 
-    // ArpTable::new関数のテスト
     #[test]
     fn test_arp_table_new() {
         // [正常系] ARPテーブルの作成
@@ -290,7 +280,6 @@ mod tests {
         assert_eq!(arp_table.default_ttl, arp_config.ttl);
     }
 
-    // ArpTable::get_or_resolveメソッドのテスト（キャッシュ機能）
     #[tokio::test]
     async fn test_arp_table_cache() {
         // [正常系] キャッシュからの取得
@@ -352,7 +341,6 @@ mod tests {
         }
     }
 
-    // ArpTable::get_or_resolveメソッドのテスト（キャッシュミス）
     #[tokio::test]
     async fn test_arp_table_cache_miss() {
         // [正常系] キャッシュミス - エントリが存在しない場合の動作確認
@@ -413,7 +401,6 @@ mod tests {
         // 期限切れエントリが削除または更新されることを間接的に確認
     }
 
-    // ArpEntry::is_expired関数のテスト
     #[test]
     fn test_arp_entry_expiration() {
         // [正常系] 有効期限内のエントリ
@@ -428,42 +415,6 @@ mod tests {
         assert!(expired_entry.is_expired());
     }
 
-    // get_source_ip関数のテスト
-    #[test]
-    fn test_get_source_ip() {
-        // [正常系] IPv4アドレスが存在する場合
-        let ipv4_cidr =
-            IPv4CIDR::new_with_prefix_length(Ipv4Addr::new(192, 168, 1, 100), &24).unwrap();
-        let interface = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            ip_addrs: vec![IPCIDR::V4(ipv4_cidr)],
-            mac_addr: MacAddr::try_from("00:11:22:33:44:55").unwrap(),
-            linktype: LinkType::Ethernet,
-        };
-
-        let result = get_source_ip(&interface, Ipv4Addr::new(192, 168, 1, 1));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Ipv4Addr::new(192, 168, 1, 100));
-
-        // [異常系] IPv4アドレスが存在しない場合
-        let interface_no_ip = NetworkInterface {
-            index: 2,
-            name: "eth1".to_string(),
-            ip_addrs: vec![],
-            mac_addr: MacAddr::try_from("00:11:22:33:44:55").unwrap(),
-            linktype: LinkType::Ethernet,
-        };
-
-        let result = get_source_ip(&interface_no_ip, Ipv4Addr::new(192, 168, 1, 1));
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ArpTableError::NoIpv4Address(_)
-        ));
-    }
-
-    // resolve_arp_with_pcap関数のテスト
     #[tokio::test]
     async fn test_resolve_arp_with_pcap() {
         // [正常系] ARP応答受信成功

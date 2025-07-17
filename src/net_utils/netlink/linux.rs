@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroI32;
 
 use futures::future::{self, Either};
@@ -49,6 +49,28 @@ impl Netlink {
         self.parse_route_entry_from_route_msg(resp_msg).await
     }
 
+    pub async fn get_ipv6_route(
+        &mut self,
+        target_ip: Ipv6Addr,
+    ) -> Result<RouteEntry, NetlinkError> {
+        let builder = RouteMessageBuilder::<Ipv6Addr>::new();
+        let req_msg = builder
+            .destination_prefix(target_ip, 128)
+            .table_id(0) // RT_TABLE_UNSPEC（C言語と同じ）
+            .protocol(RouteProtocol::Unspec) // RTPROT_UNSPEC（C言語と同じ）
+            .scope(RouteScope::Universe) // RT_SCOPE_UNIVERSE（C言語と同じ）
+            .kind(RouteType::Unspec) // RTN_UNSPEC（C言語と同じ）
+            .build();
+
+        let mut resp = self.execute_get_route_request(req_msg);
+        let resp_msg = resp
+            .try_next()
+            .await?
+            .ok_or(NetlinkError::FailedToGetRouteMessage)?;
+
+        self.parse_route_entry_from_route_msg(resp_msg).await
+    }
+
     fn execute_get_route_request(
         &mut self,
         msg: RouteMessage,
@@ -78,13 +100,19 @@ impl Netlink {
                 }
                 RouteAttribute::Destination(addr) => match addr {
                     RouteAddress::Inet(addr) => {
-                        to = Some(addr);
+                        to = Some(addr.into());
+                    }
+                    RouteAddress::Inet6(addr) => {
+                        to = Some(addr.into());
                     }
                     _ => unimplemented!(),
                 },
                 RouteAttribute::Gateway(addr) => match addr {
                     RouteAddress::Inet(addr) => {
-                        via = Some(addr);
+                        via = Some(addr.into());
+                    }
+                    RouteAddress::Inet6(addr) => {
+                        via = Some(addr.into());
                     }
                     _ => unimplemented!(),
                 },
@@ -96,8 +124,8 @@ impl Netlink {
         interface.linktype = self.get_linktype_from_index(interface.index).await?;
         let entry = RouteEntry {
             interface,
-            to: to.expect("dst address should be set").into(),
-            via: via.map(Into::into),
+            to: to.expect("dst address should be set"),
+            via,
         };
 
         Ok(entry)
