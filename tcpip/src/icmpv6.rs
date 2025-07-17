@@ -8,16 +8,17 @@ use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
 pub use self::message::{
-    DestinationUnreachableMessage, DestinationUnreachableMessageError, EchoMessage,
-    EchoMessageError, Message, NeighborAdvertisementMessage, NeighborAdvertisementMessageError,
-    NeighborSolicitationMessage, NeighborSolicitationMessageError, PacketTooBigMessage,
-    PacketTooBigMessageError, ParameterProblemMessage, ParameterProblemMessageError,
-    RedirectMessage, RedirectMessageError, RouterAdvertisementMessage,
-    RouterAdvertisementMessageError, RouterSolicitationMessage, RouterSolicitationMessageError,
-    TimeExceededMessage, TimeExceededMessageError,
+    DestinationUnreachableCode, DestinationUnreachableCodeError, DestinationUnreachableMessage,
+    DestinationUnreachableMessageError, EchoMessage, EchoMessageError, Message,
+    NeighborAdvertisementMessage, NeighborAdvertisementMessageError, NeighborSolicitationMessage,
+    NeighborSolicitationMessageError, PacketTooBigMessage, PacketTooBigMessageError,
+    ParameterProblemMessage, ParameterProblemMessageError, RedirectMessage, RedirectMessageError,
+    RouterAdvertisementMessage, RouterAdvertisementMessageError, RouterSolicitationMessage,
+    RouterSolicitationMessageError, TimeExceededMessage, TimeExceededMessageError,
 };
 pub use self::message_type::{ICMPv6MessageType, ICMPv6MessageTypeError};
 use crate::TryFromBytes;
+use crate::ipv6::IPv6Packet;
 
 /// ICMPv6メッセージ処理に関するエラー
 ///
@@ -104,14 +105,12 @@ impl ICMPv6Message {
 
     /// Destination Unreachableメッセージを作成
     pub fn destination_unreachable(
-        code: u8,
+        code: DestinationUnreachableCode,
         original_packet: impl AsRef<[u8]>,
         src: impl Into<Ipv6Addr>,
         dst: impl Into<Ipv6Addr>,
     ) -> Self {
-        let code = code.try_into().unwrap_or(crate::icmpv6::message::destination_unreachable::DestinationUnreachableCode::NoRouteToDestination);
-        let original_packet =
-            crate::ipv6::IPv6Packet::try_from_bytes(original_packet.as_ref()).unwrap();
+        let original_packet = IPv6Packet::try_from_bytes(original_packet.as_ref()).unwrap();
         let msg = DestinationUnreachableMessage::new(code, original_packet, src, dst);
         ICMPv6Message::DestinationUnreachable(msg)
     }
@@ -140,6 +139,7 @@ impl ICMPv6Message {
     }
 
     /// Router Advertisementメッセージを作成
+    #[allow(clippy::too_many_arguments)]
     pub fn router_advertisement(
         current_hop_limit: u8,
         managed_address_configuration: bool,
@@ -416,7 +416,12 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
             0x00, // ICMPv6 header
         ];
-        let message = ICMPv6Message::destination_unreachable(1, &original_packet, src, dst);
+        let message = ICMPv6Message::destination_unreachable(
+            DestinationUnreachableCode::CommunicationProhibited,
+            &original_packet,
+            src,
+            dst,
+        );
         assert_eq!(
             message.message_type(),
             ICMPv6MessageType::DestinationUnreachable
@@ -472,7 +477,12 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
             0x00, // ICMPv6 header
         ];
-        let message = ICMPv6Message::destination_unreachable(1, &original_packet, src, dst);
+        let message = ICMPv6Message::destination_unreachable(
+            DestinationUnreachableCode::CommunicationProhibited,
+            &original_packet,
+            src,
+            dst,
+        );
         let bytes: Vec<u8> = message.into();
         assert_eq!(bytes[0], 1); // Type: Destination Unreachable
         assert_eq!(bytes[1], 1); // Code: 1
@@ -564,7 +574,12 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
             0x00, // ICMPv6 header
         ];
-        let original = ICMPv6Message::destination_unreachable(3, &original_packet, src, dst);
+        let original = ICMPv6Message::destination_unreachable(
+            DestinationUnreachableCode::AddressUnreachable,
+            &original_packet,
+            src,
+            dst,
+        );
         let bytes: Vec<u8> = original.clone().into();
         let parsed = ICMPv6Message::try_from_bytes(&bytes).unwrap();
         assert_eq!(original, parsed);

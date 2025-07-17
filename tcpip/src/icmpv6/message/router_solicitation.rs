@@ -38,7 +38,7 @@ pub struct RouterSolicitationMessage {
     /// Options (variable length)
     /// 可能なオプション:
     /// - Source Link-layer Address (Type 1)
-    /// オプションは8バイト境界でアライメントされる
+    ///   オプションは8バイト境界でアライメントされる
     pub options: Bytes,
 }
 

@@ -7,10 +7,13 @@ pub mod ethernet;
 pub mod icmp;
 pub mod icmpv6;
 pub mod ip_cidr;
+pub mod ip_packet;
 pub mod ipv4;
 pub mod ipv6;
 #[cfg(target_os = "macos")]
 pub mod loopback;
+
+pub use ip_packet::{IPPacket, IPPacketError};
 
 trait TryFromBytes {
     type Error;

@@ -137,7 +137,7 @@ impl From<&EchoMessage> for Bytes {
         // Type (1 byte)
         bytes.put_u8(value.message_type().into());
         // Code (1 byte)
-        bytes.put_u8(value.code().into());
+        bytes.put_u8(value.code());
         // Checksum (2 bytes)
         bytes.put_u16(value.checksum);
         // Identifier (2 bytes)

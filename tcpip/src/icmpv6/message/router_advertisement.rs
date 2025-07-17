@@ -58,12 +58,13 @@ pub struct RouterAdvertisementMessage {
     /// - Source Link-layer Address (Type 1)
     /// - MTU (Type 5)
     /// - Prefix Information (Type 3)
-    /// オプションは8バイト境界でアライメントされる
+    ///   オプションは8バイト境界でアライメントされる
     pub options: Bytes,
 }
 
 impl RouterAdvertisementMessage {
     /// 新しいRouter Advertisementメッセージを作成
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         current_hop_limit: u8,
         managed_address_configuration: bool,

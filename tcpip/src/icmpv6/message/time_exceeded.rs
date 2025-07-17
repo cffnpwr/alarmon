@@ -46,7 +46,7 @@ impl TryFromBytes for TimeExceededCode {
 
     fn try_from_bytes(value: impl AsRef<[u8]>) -> Result<Self, Self::Error> {
         let bytes = value.as_ref();
-        if bytes.len() < 1 {
+        if bytes.is_empty() {
             return Err(TimeExceededCodeError::InvalidBytesLength(bytes.len()));
         }
 

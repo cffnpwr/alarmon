@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::u128;
 
 use thiserror::Error;
 
@@ -172,7 +171,7 @@ impl IPv6CIDR {
     }
 
     pub fn contains(&self, ip: &Ipv6Addr) -> bool {
-        let mask = (u128::MAX << (128 - self.prefix_length)) as u128;
+        let mask = u128::MAX.wrapping_shl(128 - self.prefix_length as u32);
         let network_addr = u128::from(self.address) & mask;
         let target_network_addr = u128::from(*ip) & mask;
         network_addr == target_network_addr

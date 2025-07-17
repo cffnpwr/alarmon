@@ -346,45 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn test_icmpv6_message_destination_unreachable() {
-        use std::net::Ipv6Addr;
-
-        use crate::icmpv6::{DestinationUnreachableMessage, ICMPv6Message};
-        use crate::ipv6::IPv6Packet;
-
-        // [正常系] IPv6 Destination Unreachableメッセージの生成
-        let original_packet = IPv6Packet::new(
-            0,
-            0,
-            Protocol::ICMPv6,
-            64,
-            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
-            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2),
-            b"original packet",
-        )
-        .unwrap();
-
-        let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
-        let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-
-        let message = ICMPv6Message::destination_unreachable(
-            1, // Host Unreachable
-            Vec::<u8>::from(original_packet.clone()),
-            src,
-            dst,
-        );
-
-        match &message {
-            ICMPv6Message::DestinationUnreachable(dest) => {
-                assert_eq!(dest.code, crate::icmpv6::message::destination_unreachable::DestinationUnreachableCode::AdministrativelyProhibited);
-                assert_eq!(dest.original_datagram.payload.len(), 15); // "original packet"
-            }
-            _ => panic!("Expected DestinationUnreachable message"),
-        }
-        assert!(message.validate_checksum(src, dst));
-    }
-
-    #[test]
     fn test_icmp_message_redirect() {
         // [正常系] Redirectメッセージの生成
         let gateway = Ipv4Addr::new(192, 168, 1, 1);

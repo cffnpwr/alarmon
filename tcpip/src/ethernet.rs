@@ -36,7 +36,7 @@ pub enum EthernetFrameError {
 /// - [IANA EtherType Numbers](https://www.iana.org/assignments/ieee-802-numbers/ieee-802-numbers.xhtml)
 /// - [IEEE 802.1Q VLAN Tagging](https://standards.ieee.org/standard/802_1Q-2018.html)
 #[derive(Debug, Clone, PartialEq, Eq, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = EthernetFrameError, types = [&[u8], Vec<u8>, Box<[u8]>, bytes::Bytes])]
+#[auto_try_from(method = try_from_bytes, error = EthernetFrameError, types = [&[u8], Vec<u8>, Box<[u8]>, Bytes])]
 pub struct EthernetFrame {
     pub src: MacAddr,
     pub dst: MacAddr,

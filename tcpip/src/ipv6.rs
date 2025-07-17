@@ -7,6 +7,8 @@ use thiserror::Error;
 use crate::TryFromBytes;
 use crate::ipv4::{Protocol, ProtocolError};
 
+pub mod ipv6_address;
+
 /// IPv6パケット処理に関するエラー
 ///
 /// IPv6パケットのパース・検証で発生する可能性のあるエラーを定義します。

@@ -55,7 +55,7 @@ pub struct NeighborAdvertisementMessage {
     /// Options (variable length)
     /// 可能なオプション:
     /// - Target Link-layer Address (Type 2)
-    /// オプションは8バイト境界でアライメントされる
+    ///   オプションは8バイト境界でアライメントされる
     pub options: Bytes,
 }
 

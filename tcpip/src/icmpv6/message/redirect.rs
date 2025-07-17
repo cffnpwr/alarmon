@@ -48,7 +48,7 @@ pub struct RedirectMessage {
     /// 可能なオプション:
     /// - Target Link-layer Address (Type 2)
     /// - Redirected Header (Type 4)
-    /// オプションは8バイト境界でアライメントされる
+    ///   オプションは8バイト境界でアライメントされる
     pub options: Bytes,
 }
 

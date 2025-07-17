@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 use std::num::ParseIntError;
 
+use bytes::Bytes;
 use common_lib::auto_impl_macro::AutoTryFrom;
 use thiserror::Error;
 
@@ -19,7 +20,7 @@ pub enum MacAddrError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, AutoTryFrom)]
-#[auto_try_from(method = try_from_bytes, error = MacAddrError, types = [&[u8], Vec<u8>, Box<[u8]>])]
+#[auto_try_from(method = try_from_bytes, error = MacAddrError, types = [&[u8], Vec<u8>, Box<[u8]>, Bytes])]
 pub struct MacAddr([u8; 6]);
 impl SizedAddress for MacAddr {
     const BITS: u8 = 48;
@@ -89,6 +90,14 @@ impl const IntoAddressType<HardwareType> for MacAddr {
     fn into_address_type() -> HardwareType {
         HardwareType::Ethernet
     }
+}
+
+impl MacAddr {
+    /// 未指定MACアドレス (00:00:00:00:00:00)
+    pub const UNSPECIFIED: Self = MacAddr([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    /// ブロードキャストMACアドレス (FF:FF:FF:FF:FF:FF)
+    pub const BROADCAST: Self = MacAddr([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
 }
 
 #[cfg(test)]
