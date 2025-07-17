@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::time::Instant;
 
 use chrono::Duration;
@@ -6,7 +6,7 @@ use crossterm::event;
 use fxhash::FxHashMap;
 use ratatui::widgets::TableState;
 
-use crate::config::{Config, Target};
+use crate::config::{Config, Target, TargetHost};
 
 // タイムアウトを表すマーカー値
 pub const TIMEOUT_MARKER: f64 = -1.0;
@@ -30,7 +30,7 @@ pub enum UpdateMessage {
 pub struct PingUpdate {
     pub id: u16,
     pub success: bool,
-    pub host: Ipv4Addr,
+    pub host: IpAddr,
     pub latency: Option<Duration>,
 }
 
@@ -44,7 +44,7 @@ pub struct TracerouteUpdate {
 pub struct TracerouteHop {
     pub hop_number: u8,
     pub success: bool,
-    pub address: Option<Ipv4Addr>,
+    pub address: Option<IpAddr>,
     pub latency: Option<Duration>,
 }
 
@@ -53,7 +53,7 @@ pub struct TracerouteHop {
 pub struct TracerouteHopHistory {
     pub hop_number: u8,
     pub success: bool,
-    pub address: Option<Ipv4Addr>,
+    pub address: Option<IpAddr>,
     pub latency: Option<Duration>,
     /// レスポンス時間の履歴（sparkline用）
     pub latency_history: Vec<f64>,
@@ -82,10 +82,10 @@ pub enum PingStatus {
 }
 
 pub struct AppState {
-    pub ping_results: FxHashMap<String, PingResult>,
-    pub targets: Vec<String>,
+    pub ping_results: FxHashMap<TargetHost, PingResult>,
+    pub targets: Vec<TargetHost>,
     pub selected_index: usize,
-    pub traceroute_results: FxHashMap<String, Vec<TracerouteHopHistory>>,
+    pub traceroute_results: FxHashMap<TargetHost, Vec<TracerouteHopHistory>>,
     pub show_details: bool,
     pub table_state: TableState,
     /// ConfigのTargetsへの参照（IDマッチング用）
@@ -95,14 +95,14 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: &Config) -> Self {
         let mut ping_results = FxHashMap::default();
-        let targets: Vec<String> = config.targets.iter().map(|t| t.host.clone()).collect();
+        let targets: Vec<TargetHost> = config.targets.iter().map(|t| t.host.clone()).collect();
 
         for target_config in &config.targets {
             ping_results.insert(
                 target_config.host.clone(),
                 PingResult {
                     target: target_config.name.clone(),
-                    host: target_config.host.clone(),
+                    host: target_config.host.to_string(),
                     status: PingStatus::Success,
                     response_time: None,
                     last_updated: Instant::now(),
@@ -286,7 +286,7 @@ impl AppState {
         }
     }
 
-    pub fn get_traceroute_hops(&self, target: &str) -> Vec<TracerouteHopHistory> {
+    pub fn get_traceroute_hops(&self, target: &TargetHost) -> Vec<TracerouteHopHistory> {
         self.traceroute_results
             .get(target)
             .cloned()
@@ -339,17 +339,17 @@ mod tests {
                 Target {
                     id: 1,
                     name: "DNS1".to_string(),
-                    host: "8.8.8.8".to_string(),
+                    host: TargetHost::Domain("8.8.8.8".to_string()),
                 },
                 Target {
                     id: 2,
                     name: "Router".to_string(),
-                    host: "192.168.1.1".to_string(),
+                    host: TargetHost::Domain("192.168.1.1".to_string()),
                 },
                 Target {
                     id: 3,
                     name: "DNS2".to_string(),
-                    host: "1.1.1.1".to_string(),
+                    host: TargetHost::Domain("1.1.1.1".to_string()),
                 },
             ],
             ..Config::default()
@@ -360,7 +360,7 @@ mod tests {
 
         // Ping結果を追加（順序と異なる順番で追加）
         app_state.ping_results.insert(
-            "1.1.1.1".to_string(),
+            TargetHost::Domain("1.1.1.1".to_string()),
             PingResult {
                 target: "1.1.1.1".to_string(),
                 host: "1.1.1.1".to_string(),
@@ -376,7 +376,7 @@ mod tests {
         );
 
         app_state.ping_results.insert(
-            "192.168.1.1".to_string(),
+            TargetHost::Domain("192.168.1.1".to_string()),
             PingResult {
                 target: "192.168.1.1".to_string(),
                 host: "192.168.1.1".to_string(),
@@ -392,7 +392,7 @@ mod tests {
         );
 
         app_state.ping_results.insert(
-            "8.8.8.8".to_string(),
+            TargetHost::Domain("8.8.8.8".to_string()),
             PingResult {
                 target: "8.8.8.8".to_string(),
                 host: "8.8.8.8".to_string(),

@@ -72,11 +72,15 @@ fn render_main_content(frame: &mut Frame, app_state: &mut AppState, area: layout
 
     // 選択されたターゲットのTraceroute結果を取得
     let selected_target = if selected_index < app_state.targets.len() {
-        &app_state.targets[selected_index]
+        Some(&app_state.targets[selected_index])
     } else {
-        ""
+        None
     };
-    let traceroute_hops = app_state.get_traceroute_hops(selected_target);
+    let traceroute_hops = if let Some(target) = selected_target {
+        app_state.get_traceroute_hops(target)
+    } else {
+        Vec::new()
+    };
 
     let ping_results_slice: Vec<PingResult> = ping_results.into_iter().cloned().collect();
 

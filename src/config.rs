@@ -1,9 +1,10 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{fmt, fs, io};
 
 use chrono::Duration;
 use rand::Rng;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_with::{DurationSeconds, serde_as};
 use thiserror::Error;
 
@@ -13,6 +14,40 @@ pub(crate) enum ConfigError {
     LoadFileError(PathBuf, io::ErrorKind),
     #[error(transparent)]
     TomlParseError(#[from] toml::de::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TargetHost {
+    IpAddress(IpAddr),
+    Domain(String),
+}
+
+impl fmt::Display for TargetHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TargetHost::IpAddress(ip) => write!(f, "{ip}"),
+            TargetHost::Domain(domain) => write!(f, "{domain}"),
+        }
+    }
+}
+
+impl From<IpAddr> for TargetHost {
+    fn from(ip: IpAddr) -> Self {
+        TargetHost::IpAddress(ip)
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetHost {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.parse::<IpAddr>() {
+            Ok(ip) => Ok(TargetHost::IpAddress(ip)),
+            Err(_) => Ok(TargetHost::Domain(s)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -25,7 +60,7 @@ pub struct Target {
     pub name: String,
 
     /// 対象のホスト名またはIPアドレス
-    pub host: String,
+    pub host: TargetHost,
 }
 
 #[serde_as]
@@ -203,9 +238,15 @@ host = "8.8.8.8"
 
         assert_eq!(config.targets.len(), 2);
         assert_eq!(config.targets[0].name, "Router");
-        assert_eq!(config.targets[0].host, "192.168.1.1");
+        assert_eq!(
+            config.targets[0].host,
+            TargetHost::IpAddress("192.168.1.1".parse().unwrap())
+        );
         assert_eq!(config.targets[1].name, "DNS");
-        assert_eq!(config.targets[1].host, "8.8.8.8");
+        assert_eq!(
+            config.targets[1].host,
+            TargetHost::IpAddress("8.8.8.8".parse().unwrap())
+        );
         assert_eq!(config.interval, Duration::seconds(60));
         assert_eq!(config.timeout, Duration::seconds(5));
         assert_eq!(config.arp.ttl, Duration::seconds(30)); // デフォルト値
@@ -285,5 +326,79 @@ host = "192.168.1.1"
         assert!(result.is_ok());
         let config = result.unwrap();
         assert_eq!(config.timeout, Duration::seconds(5)); // デフォルト値
+    }
+
+    #[test]
+    fn test_target_host() {
+        // [正常系] IPv4アドレスのパース
+        let ipv4_host: TargetHost = "192.168.1.1".parse::<IpAddr>().unwrap().into();
+        assert_eq!(
+            ipv4_host,
+            TargetHost::IpAddress("192.168.1.1".parse().unwrap())
+        );
+        assert_eq!(ipv4_host.to_string(), "192.168.1.1");
+
+        // [正常系] IPv6アドレス（短縮形）のパース
+        let ipv6_short_host: TargetHost = "2001:db8::1".parse::<IpAddr>().unwrap().into();
+        assert_eq!(
+            ipv6_short_host,
+            TargetHost::IpAddress("2001:db8::1".parse().unwrap())
+        );
+        assert_eq!(ipv6_short_host.to_string(), "2001:db8::1");
+
+        // [正常系] IPv6アドレス（完全形）のパース
+        let ipv6_full_host: TargetHost = "2001:0db8:0000:0000:0000:0000:0000:0001"
+            .parse::<IpAddr>()
+            .unwrap()
+            .into();
+        assert_eq!(
+            ipv6_full_host,
+            TargetHost::IpAddress("2001:0db8:0000:0000:0000:0000:0000:0001".parse().unwrap())
+        );
+        assert_eq!(ipv6_full_host.to_string(), "2001:db8::1"); // 標準の短縮表示
+
+        // [正常系] Domain名
+        let domain_host = TargetHost::Domain("example.com".to_string());
+        assert_eq!(domain_host.to_string(), "example.com");
+    }
+
+    #[test]
+    fn test_target_host_serde() {
+        // [正常系] IPv4アドレスのデシリアライズ
+        let json_ipv4 = r#""192.168.1.1""#;
+        let deserialized: TargetHost = serde_json::from_str(json_ipv4).unwrap();
+        assert_eq!(
+            deserialized,
+            TargetHost::IpAddress("192.168.1.1".parse().unwrap())
+        );
+
+        // [正常系] IPv6アドレス（短縮形）のデシリアライズ
+        let json_ipv6_short = r#""2001:db8::1""#;
+        let deserialized: TargetHost = serde_json::from_str(json_ipv6_short).unwrap();
+        assert_eq!(
+            deserialized,
+            TargetHost::IpAddress("2001:db8::1".parse().unwrap())
+        );
+
+        // [正常系] IPv6アドレス（完全形）のデシリアライズ
+        let json_ipv6_full = r#""2001:0db8:0000:0000:0000:0000:0000:0001""#;
+        let deserialized: TargetHost = serde_json::from_str(json_ipv6_full).unwrap();
+        assert_eq!(
+            deserialized,
+            TargetHost::IpAddress("2001:0db8:0000:0000:0000:0000:0000:0001".parse().unwrap())
+        );
+
+        // [正常系] Domain名のデシリアライズ
+        let json_domain = r#""example.com""#;
+        let deserialized: TargetHost = serde_json::from_str(json_domain).unwrap();
+        assert_eq!(deserialized, TargetHost::Domain("example.com".to_string()));
+
+        // [正常系] 無効なIPアドレスはDomainとして扱われる
+        let json_invalid = r#""invalid.ip.address""#;
+        let deserialized: TargetHost = serde_json::from_str(json_invalid).unwrap();
+        assert_eq!(
+            deserialized,
+            TargetHost::Domain("invalid.ip.address".to_string())
+        );
     }
 }

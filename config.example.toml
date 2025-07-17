@@ -1,13 +1,23 @@
 # 監視対象
 targets = [
   # { name = 表示名, host = ホスト名 }
-  { name = "loopback", host = "127.0.0.1" },
-  { name = "Cloudflare Primary DNS", host = "1.1.1.1" },
-  { name = "Cloudflare Secondary DNS", host = "1.0.0.1" },
-  { name = "Google Primary DNS", host = "8.8.8.8" },
-  { name = "Google Secondary DNS", host = "8.8.4.4" },
-  { name = "RawIP Target (Tailscale DNS)", host = "100.100.100.100" },
-  { name = "invalid", host = "123.45.67.89" },
+  # IPv4
+  { name = "loopback (IPv4)", host = "127.0.0.1" },
+  { name = "Cloudflare Primary DNS (IPv4)", host = "1.1.1.1" },
+  { name = "Cloudflare Secondary DNS (IPv4)", host = "1.0.0.1" },
+  { name = "Google Primary DNS (IPv4)", host = "8.8.8.8" },
+  { name = "Google Secondary DNS (IPv4)", host = "8.8.4.4" },
+  { name = "RawIP Target (IPv4) (Tailscale DNS)", host = "100.100.100.100" },
+  { name = "invalid (IPv4)", host = "123.45.67.89" },
+
+  # IPv6
+  { name = "loopback (IPv6)", host = "::1" },
+  { name = "Cloudflare Primary DNS (IPv6)", host = "2606:4700:4700::1111" },
+  { name = "Cloudflare Secondary DNS (IPv6)", host = "2606:4700:4700::1001" },
+  { name = "Google Primary DNS (IPv6)", host = "2001:4860:4860::8888" },
+  { name = "Google Secondary DNS (IPv6)", host = "2001:4860:4860::8844" },
+  { name = "RawIP Target (IPv6) (Tailscale Node)", host = "fd7a:115c:a1e0::ad35:e40b" },
+  { name = "invalid (IPv6)", host = "2001:db8::1234" },
 ]
 # 監視間隔（秒）
 interval = 1
