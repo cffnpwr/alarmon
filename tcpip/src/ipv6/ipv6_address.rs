@@ -21,11 +21,11 @@ pub trait IPv6AddrExt {
 
     /// RFC 4291: IPv6のSolicited-Node Multicast MACアドレス計算
     /// 33:33:xx:xx:xx:xx の形式で、下位24bitはIPv6アドレスの下位24bit
-    fn into_multicast_mac(&self) -> MacAddr;
+    fn to_multicast_mac(&self) -> MacAddr;
 
     /// RFC 4291: IPv6のSolicited-Node Multicastアドレス計算
     /// ff02::1:ffxx:xxxx の形式で、下位24bitはIPv6アドレスの下位24bit
-    fn into_multicast_ipv6(&self) -> Ipv6Addr;
+    fn to_multicast_ipv6(&self) -> Ipv6Addr;
 }
 
 impl IPv6AddrExt for Ipv6Addr {
@@ -51,7 +51,7 @@ impl IPv6AddrExt for Ipv6Addr {
         self.is_global_unicast() || self.is_unique_local()
     }
 
-    fn into_multicast_mac(&self) -> MacAddr {
+    fn to_multicast_mac(&self) -> MacAddr {
         let octets = self.octets();
         let mut mac_bytes = [0u8; 6];
         mac_bytes[0] = 0x33;
@@ -64,7 +64,7 @@ impl IPv6AddrExt for Ipv6Addr {
         MacAddr::from(mac_bytes)
     }
 
-    fn into_multicast_ipv6(&self) -> Ipv6Addr {
+    fn to_multicast_ipv6(&self) -> Ipv6Addr {
         let octets = self.octets();
         Ipv6Addr::new(
             0xff02,
@@ -84,10 +84,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_into_multicast_mac() {
+    fn test_to_multicast_mac() {
         // [正常系] Solicited-Node Multicast MACアドレスの計算
         let target_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
-        let result = target_ip.into_multicast_mac();
+        let result = target_ip.to_multicast_mac();
 
         // 33:33:xx:xx:xx:xx の形式で、下位24bitはIPv6アドレスの下位24bit
         let expected = MacAddr::from([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
@@ -95,10 +95,10 @@ mod tests {
     }
 
     #[test]
-    fn test_into_multicast_ipv6() {
+    fn test_to_multicast_ipv6() {
         // [正常系] Solicited-Node Multicast IPv6アドレスの計算
         let target_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
-        let result = target_ip.into_multicast_ipv6();
+        let result = target_ip.to_multicast_ipv6();
 
         // ff02::1:ffxx:xxxx の形式で、下位24bitはIPv6アドレスの下位24bit
         let expected = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0001);

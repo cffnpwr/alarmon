@@ -138,7 +138,7 @@ async fn resolve_neighbor_with_pcap<P: pcap::Pcap>(
     let mut receiver = cap.receiver;
 
     // ICMPv6 Neighbor Solicitationメッセージを作成
-    let multicst_addr = nd_target.into_multicast_ipv6();
+    let multicst_addr = nd_target.to_multicast_ipv6();
     let src_mac = best_route.interface.mac_addr;
     let mut src_mac_bytes = BytesMut::from(&[1, 1][..]);
     src_mac_bytes.extend_from_slice(&<[u8; 6]>::from(src_mac));
@@ -158,7 +158,7 @@ async fn resolve_neighbor_with_pcap<P: pcap::Pcap>(
 
     // 宛先MacアドレスはマルチキャストMacアドレス
     // 33:33:ff:xx:xx:xx の形式で、IPv6アドレスの下位24bitを使用
-    let multicast_mac = nd_target.into_multicast_mac();
+    let multicast_mac = nd_target.to_multicast_mac();
     let ethernet_frame = EthernetFrame::new(
         &src_mac,
         &multicast_mac,
