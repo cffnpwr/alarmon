@@ -9,7 +9,6 @@ use libc::{
     sockaddr_dl, sockaddr_in, sockaddr_in6, socket,
 };
 use socket2::{Domain, Protocol, Socket, Type};
-use tcpip::ipv6::ipv6_address::IPv6AddrExt;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
@@ -224,15 +223,6 @@ impl Netlink {
     ) -> usize {
         let sa_len = mem::size_of::<sockaddr_in6>();
         let octets = target_ip.octets();
-        let scope_id = if target_ip.is_link_local() {
-            // リンクローカルアドレスの場合、scope_id設定が必要
-            // ただし、グローバルユニキャストアドレスを優先するため、
-            // 実際にはこのケースは避けるべき
-            0
-        } else {
-            // グローバルユニキャストアドレスの場合、scope_idは不要
-            0
-        };
 
         let sa_in6 = sockaddr_in6 {
             sin6_len: sa_len as u8,
@@ -240,7 +230,7 @@ impl Netlink {
             sin6_port: 0,
             sin6_flowinfo: 0,
             sin6_addr: in6_addr { s6_addr: octets },
-            sin6_scope_id: scope_id,
+            sin6_scope_id: 0,
         };
         // sockaddr_in6のバイト配列をコピー
         let sa_ptr = &sa_in6 as *const sockaddr_in6 as *const u8;
