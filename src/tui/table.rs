@@ -76,7 +76,7 @@ pub fn build_table_rows_data(
         let (status_icon, status_color) = match &result.status {
             PingStatus::Success => ("✓", Color::Green),
             PingStatus::Timeout => ("⚠", Color::Yellow),
-            PingStatus::Error(_) => ("✗", Color::Red),
+            PingStatus::NetworkError(network_error) => (network_error.icon(), Color::Red),
         };
 
         let name_with_status = format!("{} {}", status_icon, result.target);
@@ -114,7 +114,7 @@ pub fn build_table_rows_data(
         } else {
             match &result.status {
                 PingStatus::Success => "-".to_string(),
-                PingStatus::Timeout | PingStatus::Error(_) => "✗".to_string(),
+                PingStatus::Timeout | PingStatus::NetworkError(_) => "✗".to_string(),
             }
         };
 
@@ -141,7 +141,7 @@ pub fn build_table_rows_data(
         } else {
             match &result.status {
                 PingStatus::Success => Cell::from(chart).style(Style::default().fg(Color::Green)),
-                PingStatus::Timeout | PingStatus::Error(_) => {
+                PingStatus::Timeout | PingStatus::NetworkError(_) => {
                     Cell::from(chart).style(Style::default().fg(Color::Red))
                 }
             }

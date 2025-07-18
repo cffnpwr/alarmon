@@ -15,7 +15,7 @@ use tokio::time::{interval, timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::net_utils::netlink::NetlinkError;
-use crate::tui::models::{TracerouteHop, TracerouteUpdate, UpdateMessage};
+use crate::tui::models::{NetworkErrorType, TracerouteHop, TracerouteUpdate, UpdateMessage};
 
 #[derive(Debug, Error)]
 pub enum TracerouteWorkerError {
@@ -42,6 +42,8 @@ struct HopInfo {
     rtt: Option<Duration>,
     /// 応答を受信した時刻（タイムアウト時はNone）
     received_at: Option<DateTime<Utc>>,
+    /// ICMPエラー情報
+    error_info: Option<NetworkErrorType>,
 }
 
 /// Tracerouteの応答タイプ
@@ -51,6 +53,8 @@ enum TracerouteResponse {
     TimeExceeded(HopInfo),
     /// Echo Reply応答（最終ホップ）
     EchoReply(HopInfo),
+    /// ICMPエラー応答
+    Error(HopInfo),
     /// タイムアウト
     Timeout { ttl: u8 },
 }
@@ -170,6 +174,18 @@ impl TracerouteWorker {
                     hops.push(hop_info);
                     break; // 宛先に到達したので終了
                 }
+                TracerouteResponse::Error(hop_info) => {
+                    debug!(
+                        "Error at hop {}: {:?}",
+                        hop_info.hop_number, hop_info.error_info
+                    );
+                    hops.push(hop_info.clone());
+                    // エラーの種類によってはtracerouteを継続するか終了するかを判定
+                    if let Some(NetworkErrorType::DestinationUnreachable(_)) = hop_info.error_info {
+                        break; // Destination Unreachableの場合は終了
+                    }
+                    // その他のエラーは継続
+                }
                 TracerouteResponse::Timeout { ttl } => {
                     debug!("Timeout at hop {ttl}");
                     // タイムアウトもホップとして記録（*で表示するため）
@@ -178,6 +194,7 @@ impl TracerouteWorker {
                         ip_address: None,
                         rtt: None,
                         received_at: None,
+                        error_info: None,
                     };
                     hops.push(timeout_hop);
                 }
@@ -345,43 +362,117 @@ impl TracerouteWorker {
             // Time Exceeded応答（中間ホップ）
             ICMPMessage::TimeExceeded(time_exceeded) => {
                 if time_exceeded.code == TimeExceededCode::TtlExceeded {
-                    // 元のICMPパケットの識別子とsequence numberをチェック
-                    if let Ok(ICMPMessage::Echo(echo_req)) =
+                    let echo_req = if let Ok(ICMPMessage::Echo(echo_req)) =
                         ICMPMessage::try_from(&time_exceeded.original_datagram.payload)
                     {
-                        // 識別子とsequence number（TTLとして使用）で照合
-                        if echo_req.identifier == self.identifier
-                            && echo_req.sequence_number == expected_ttl as u16
-                        {
-                            let hop_info = HopInfo {
-                                hop_number: expected_ttl,
-                                ip_address: Some(pkt.src.into()),
-                                rtt: Some(rtt),
-                                received_at: Some(received_at),
-                            };
-                            return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
-                        }
+                        echo_req
+                    } else {
+                        return Ok(None);
+                    };
+                    if echo_req.identifier != self.identifier
+                        || echo_req.sequence_number != expected_ttl as u16
+                    {
+                        return Ok(None);
                     }
-                }
-            }
-            // Echo Reply応答（宛先到達）
-            ICMPMessage::EchoReply(echo) => {
-                if echo.identifier == self.identifier
-                    && IpAddr::V4(pkt.src) == self.target
-                    && echo.sequence_number == expected_ttl as u16
-                {
                     let hop_info = HopInfo {
                         hop_number: expected_ttl,
                         ip_address: Some(pkt.src.into()),
                         rtt: Some(rtt),
                         received_at: Some(received_at),
+                        error_info: None,
                     };
-                    return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
+                    return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
                 }
             }
-            _ => {
-                // その他のICMPメッセージは無視
+            // Echo Reply応答（宛先到達）
+            ICMPMessage::EchoReply(echo) => {
+                if echo.identifier != self.identifier
+                    || IpAddr::V4(pkt.src) != self.target
+                    || echo.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: None,
+                };
+                return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
             }
+            // Destination Unreachable処理
+            ICMPMessage::DestinationUnreachable(dest_unreachable) => {
+                let echo_req = if let Ok(ICMPMessage::Echo(echo_req)) =
+                    ICMPMessage::try_from(&dest_unreachable.original_datagram.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::DestinationUnreachable(
+                        dest_unreachable.code,
+                    )),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
+            }
+            // Parameter Problem処理
+            ICMPMessage::ParameterProblem(param_problem) => {
+                let echo_req = if let Ok(ICMPMessage::Echo(echo_req)) =
+                    ICMPMessage::try_from(&param_problem.original_datagram.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::ParameterProblem),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
+            }
+            // Redirect処理
+            ICMPMessage::Redirect(redirect) => {
+                let echo_req = if let Ok(ICMPMessage::Echo(echo_req)) =
+                    ICMPMessage::try_from(&redirect.original_datagram.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::Redirect(redirect.code)),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
+            }
+            _ => {}
         }
 
         Ok(None)
@@ -401,42 +492,116 @@ impl TracerouteWorker {
         match icmpv6_msg {
             // Time Exceeded応答（中間ホップ）
             ICMPv6Message::TimeExceeded(time_exceeded) => {
-                // 元のICMPv6パケットの識別子とsequence numberをチェック
-                if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
+                let echo_req = if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
                     ICMPv6Message::try_from(&time_exceeded.original_packet.payload)
                 {
-                    // 識別子とsequence number（Hop Limitとして使用）で照合
-                    if echo_req.identifier == self.identifier
-                        && echo_req.sequence_number == expected_ttl as u16
-                    {
-                        let hop_info = HopInfo {
-                            hop_number: expected_ttl,
-                            ip_address: Some(pkt.src.into()),
-                            rtt: Some(rtt),
-                            received_at: Some(received_at),
-                        };
-                        return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
-                    }
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
                 }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: None,
+                };
+                return Ok(Some(TracerouteResponse::TimeExceeded(hop_info)));
             }
             // Echo Reply応答（宛先到達）
             ICMPv6Message::EchoReply(echo) => {
-                if echo.identifier == self.identifier
-                    && IpAddr::V6(pkt.src) == self.target
-                    && echo.sequence_number == expected_ttl as u16
+                if echo.identifier != self.identifier
+                    || IpAddr::V6(pkt.src) != self.target
+                    || echo.sequence_number != expected_ttl as u16
                 {
-                    let hop_info = HopInfo {
-                        hop_number: expected_ttl,
-                        ip_address: Some(pkt.src.into()),
-                        rtt: Some(rtt),
-                        received_at: Some(received_at),
-                    };
-                    return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
+                    return Ok(None);
                 }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: None,
+                };
+                return Ok(Some(TracerouteResponse::EchoReply(hop_info)));
             }
-            _ => {
-                // その他のICMPv6メッセージは無視
+            // Destination Unreachable処理
+            ICMPv6Message::DestinationUnreachable(dest_unreachable) => {
+                let echo_req = if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
+                    ICMPv6Message::try_from(&dest_unreachable.original_packet.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::DestinationUnreachableV6(
+                        dest_unreachable.code,
+                    )),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
             }
+            // Parameter Problem処理
+            ICMPv6Message::ParameterProblem(param_problem) => {
+                let echo_req = if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
+                    ICMPv6Message::try_from(&param_problem.original_packet.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::ParameterProblem),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
+            }
+            // Packet Too Big処理
+            ICMPv6Message::PacketTooBig(packet_too_big) => {
+                let echo_req = if let Ok(ICMPv6Message::EchoRequest(echo_req)) =
+                    ICMPv6Message::try_from(&packet_too_big.original_packet.payload)
+                {
+                    echo_req
+                } else {
+                    return Ok(None);
+                };
+                if echo_req.identifier != self.identifier
+                    || echo_req.sequence_number != expected_ttl as u16
+                {
+                    return Ok(None);
+                }
+                let hop_info = HopInfo {
+                    hop_number: expected_ttl,
+                    ip_address: Some(pkt.src.into()),
+                    rtt: Some(rtt),
+                    received_at: Some(received_at),
+                    error_info: Some(NetworkErrorType::PacketTooBig(packet_too_big.mtu)),
+                };
+                return Ok(Some(TracerouteResponse::Error(hop_info)));
+            }
+            _ => {}
         }
 
         Ok(None)
@@ -486,6 +651,7 @@ mod tests {
             ip_address: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
             rtt: Some(Duration::milliseconds(10)),
             received_at: Some(Utc::now()),
+            error_info: None,
         };
 
         assert_eq!(hop_info.hop_number, 1);

@@ -332,6 +332,7 @@ impl PingResponseReceiver {
                     host: pending_ping.target_ip,
                     success: true,
                     latency: Some(Duration::milliseconds(latency.num_milliseconds())),
+                    error: None,
                 };
 
                 if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
@@ -360,6 +361,19 @@ impl PingResponseReceiver {
                     .send(IPPacket::V4(pkt))
                     .await
                     .map_err(|_| PingWorkerError::ChannelSendError)?;
+            }
+            ICMPMessage::DestinationUnreachable(dest_msg) => {
+                self.handle_ipv4_error(&dest_msg.original_datagram).await;
+            }
+            ICMPMessage::TimeExceeded(time_msg) => {
+                self.handle_ipv4_error(&time_msg.original_datagram).await;
+            }
+            ICMPMessage::ParameterProblem(param_msg) => {
+                self.handle_ipv4_error(&param_msg.original_datagram).await;
+            }
+            ICMPMessage::Redirect(redirect_msg) => {
+                self.handle_ipv4_error(&redirect_msg.original_datagram)
+                    .await;
             }
             msg => {
                 debug!("Received message is not Echo Reply: {}", msg.message_type());
@@ -401,6 +415,7 @@ impl PingResponseReceiver {
                     host: pending_ping.target_ip,
                     success: true,
                     latency: Some(Duration::milliseconds(latency.num_milliseconds())),
+                    error: None,
                 };
 
                 if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
@@ -434,6 +449,24 @@ impl PingResponseReceiver {
                     .await
                     .map_err(|_| PingWorkerError::ChannelSendError)?;
             }
+            ICMPv6Message::DestinationUnreachable(dest_msg) => {
+                self.handle_ipv6_error(&dest_msg.original_packet).await;
+            }
+            ICMPv6Message::TimeExceeded(time_msg) => {
+                self.handle_ipv6_error(&time_msg.original_packet).await;
+            }
+            ICMPv6Message::ParameterProblem(param_msg) => {
+                self.handle_ipv6_error(&param_msg.original_packet).await;
+            }
+            ICMPv6Message::PacketTooBig(ptb_msg) => {
+                self.handle_ipv6_error(&ptb_msg.original_packet).await;
+            }
+            ICMPv6Message::Redirect(redirect_msg) => {
+                debug!(
+                    "ICMPv6 Redirect received: {} -> {}",
+                    redirect_msg.destination_address, redirect_msg.target_address
+                );
+            }
             msg => {
                 debug!("Received message is not Echo Reply: {}", msg.message_type());
             }
@@ -464,6 +497,7 @@ impl PingResponseReceiver {
                     host: pending_ping.target_ip,
                     success: false,
                     latency: None,
+                    error: None,
                 };
 
                 if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
@@ -471,6 +505,89 @@ impl PingResponseReceiver {
                 }
             }
         }
+    }
+
+    // 共通エラー処理ユーティリティメソッド
+    async fn handle_ipv4_error(&mut self, original_datagram: &IPv4Packet) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv4_error(original_datagram)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv4 error: {e}");
+                None
+            })
+        {
+            if let Err(e) = self.send_error_update(pending_ping).await {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv6_error(&mut self, original_packet: &IPv6Packet) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv6_error(original_packet)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv6 error: {e}");
+                None
+            })
+        {
+            if let Err(e) = self.send_error_update(pending_ping).await {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    fn extract_pending_ping_from_ipv4_error(
+        &mut self,
+        original_datagram: &IPv4Packet,
+    ) -> Result<Option<PendingPing>, PingWorkerError> {
+        let Ok(icmp_payload) = ICMPMessage::try_from(&original_datagram.payload) else {
+            return Ok(None); // 解析失敗時は無視
+        };
+
+        let ICMPMessage::Echo(echo_msg) = icmp_payload else {
+            return Ok(None); // Echo以外の元パケットは無視
+        };
+
+        if echo_msg.identifier != self.identifier {
+            return Ok(None); // 異なるidentifierは無視
+        }
+
+        Ok(self.pending_pings.remove(&echo_msg.sequence_number))
+    }
+
+    fn extract_pending_ping_from_ipv6_error(
+        &mut self,
+        original_packet: &IPv6Packet,
+    ) -> Result<Option<PendingPing>, PingWorkerError> {
+        let Ok(icmpv6_payload) = ICMPv6Message::try_from(&original_packet.payload) else {
+            return Ok(None); // 解析失敗時は無視
+        };
+
+        let ICMPv6Message::EchoRequest(echo_msg) = icmpv6_payload else {
+            return Ok(None); // EchoRequest以外の元パケットは無視
+        };
+
+        if echo_msg.identifier != self.identifier {
+            return Ok(None); // 異なるidentifierは無視
+        }
+
+        Ok(self.pending_pings.remove(&echo_msg.sequence_number))
+    }
+
+    async fn send_error_update(&self, pending_ping: PendingPing) -> Result<(), PingWorkerError> {
+        let ping_update = PingUpdate {
+            id: self.identifier,
+            host: pending_ping.target_ip,
+            success: false,
+            latency: None,
+            error: None,
+        };
+
+        if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
+            warn!("Failed to send ping error update to TUI: {e}");
+        }
+
+        Ok(())
     }
 }
 

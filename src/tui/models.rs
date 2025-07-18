@@ -5,6 +5,8 @@ use chrono::Duration;
 use crossterm::event;
 use fxhash::FxHashMap;
 use ratatui::widgets::TableState;
+use tcpip::icmp::{DestinationUnreachableCode, RedirectCode};
+use tcpip::icmpv6::DestinationUnreachableCode as ICMPv6DestinationUnreachableCode;
 
 use crate::config::{Config, Target, TargetHost};
 
@@ -32,12 +34,50 @@ pub struct PingUpdate {
     pub success: bool,
     pub host: IpAddr,
     pub latency: Option<Duration>,
+    pub error: Option<NetworkErrorType>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TracerouteUpdate {
     pub id: u16,
     pub hops: Vec<TracerouteHop>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkErrorType {
+    // ICMPエラー
+    DestinationUnreachable(DestinationUnreachableCode),
+    DestinationUnreachableV6(ICMPv6DestinationUnreachableCode),
+    ParameterProblem,
+    Redirect(RedirectCode),
+    PacketTooBig(u32),
+}
+
+impl NetworkErrorType {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            NetworkErrorType::DestinationUnreachable(code) => match code {
+                DestinationUnreachableCode::NetworkUnreachable => "🌐",
+                DestinationUnreachableCode::HostUnreachable => "🔌",
+                DestinationUnreachableCode::ProtocolUnreachable => "🔧",
+                DestinationUnreachableCode::PortUnreachable => "🚪",
+                DestinationUnreachableCode::FragmentationNeededAndDFSet => "🔗",
+                DestinationUnreachableCode::SourceRouteFailed => "🛤️",
+            },
+            NetworkErrorType::DestinationUnreachableV6(code) => match code {
+                ICMPv6DestinationUnreachableCode::NoRouteToDestination => "🌐",
+                ICMPv6DestinationUnreachableCode::CommunicationProhibited => "🚫",
+                ICMPv6DestinationUnreachableCode::BeyondScopeOfSourceAddress => "🔍",
+                ICMPv6DestinationUnreachableCode::AddressUnreachable => "🔌",
+                ICMPv6DestinationUnreachableCode::PortUnreachable => "🚪",
+                ICMPv6DestinationUnreachableCode::SourceAddressPolicyViolation => "🚧",
+                ICMPv6DestinationUnreachableCode::RejectRouteToDestination => "❌",
+            },
+            NetworkErrorType::ParameterProblem => "❓",
+            NetworkErrorType::Redirect(_) => "↩",
+            NetworkErrorType::PacketTooBig(_) => "📦",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,8 +117,7 @@ pub struct PingResult {
 pub enum PingStatus {
     Success,
     Timeout,
-    #[allow(dead_code)]
-    Error(String),
+    NetworkError(NetworkErrorType),
 }
 
 pub struct AppState {
@@ -181,7 +220,12 @@ impl AppState {
                         result.latency_history.remove(0);
                     }
 
-                    result.status = PingStatus::Timeout;
+                    // エラー種別の優先順位で設定
+                    if let Some(error) = update.error {
+                        result.status = PingStatus::NetworkError(error);
+                    } else {
+                        result.status = PingStatus::Timeout;
+                    }
                 }
 
                 result.packet_loss = if result.total_sent > 0 {
@@ -191,8 +235,6 @@ impl AppState {
                 };
             }
         }
-
-        // Traceroute結果の更新はTracerouteUpdateで行う
     }
 
     pub fn update_traceroute_result(&mut self, update: TracerouteUpdate) {
