@@ -1,4 +1,3 @@
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use fxhash::FxHashMap;
@@ -16,7 +15,7 @@ use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::neighbor_discovery::NeighborCache;
 #[cfg(target_os = "linux")]
 use crate::net_utils::netlink::LinkType;
-use crate::net_utils::netlink::{NetlinkError, NetworkInterface};
+use crate::net_utils::netlink::NetlinkError;
 use crate::tui::models::UpdateMessage;
 
 #[derive(Debug, Error)]
@@ -78,8 +77,10 @@ impl WorkerPool {
 
             // 各宛先IPアドレスに対してPing Worker（およびTraceroute Worker）を起動
             for ping_target in &ping_targets.targets {
-                let src_addr =
-                    Self::get_source_addr_for_target(&ping_targets.ni, &ping_target.host)?;
+                let src_addr = ping_targets
+                    .ni
+                    .get_best_source_ip(&ping_target.host)
+                    .ok_or(WorkerPoolError::NoEthernetInterfaces)?;
 
                 // Ping Workerを作成
                 let ping_worker = PingWorker::new(
@@ -88,6 +89,7 @@ impl WorkerPool {
                     src_addr,
                     ping_target.host,
                     cfg.interval,
+                    cfg.timeout,
                     recv_ip_tx.clone(),
                     send_ip_broadcast_rxs
                         .get(&ping_target.host)
@@ -157,46 +159,14 @@ impl WorkerPool {
 
         Ok(())
     }
-
-    /// 指定されたターゲットIPに対する最適な送信元IPアドレスを取得
-    fn get_source_addr_for_target(
-        ni: &NetworkInterface,
-        ping_target: &IpAddr,
-    ) -> Result<IpAddr, WorkerPoolError> {
-        #[cfg(target_os = "linux")]
-        if ni.linktype == LinkType::Loopback {
-            // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
-            return Ok(*ping_target);
-        }
-
-        // IPv6の場合、より適切なsource addressを選択
-        match ping_target {
-            IpAddr::V6(_) => {
-                // IPv6の場合、優先的にグローバルユニキャストアドレスを選択
-                if let Some(preferred_addr) = ni.get_preferred_ipv6_address() {
-                    return Ok(IpAddr::V6(preferred_addr));
-                }
-                // フォールバック: 既存のロジック
-                ni.get_best_source_ip(ping_target)
-                    .ok_or(WorkerPoolError::NoEthernetInterfaces)
-            }
-            _ => {
-                // IPv4の場合は既存のロジック
-                ni.get_best_source_ip(ping_target)
-                    .ok_or(WorkerPoolError::NoEthernetInterfaces)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
     use std::time::Duration;
 
-    use tcpip::ip_cidr::{IPCIDR, IPv4CIDR, IPv4Netmask, IPv6CIDR};
-    use tcpip::ipv6::ipv6_address::IPv6AddrExt;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
@@ -505,93 +475,5 @@ mod tests {
             };
             assert_eq!(original_ping_id, (i + 1) as u16);
         }
-    }
-
-    #[test]
-    fn test_get_source_addr_for_target_ipv6() {
-        // [正常系] IPv6の場合のsource address選択
-
-        let interface = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            mac_addr: Default::default(),
-            ip_addrs: vec![
-                // リンクローカルアドレス
-                IPCIDR::V6(IPv6CIDR::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap()),
-                // グローバルユニキャストアドレス
-                IPCIDR::V6(
-                    IPv6CIDR::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 64).unwrap(),
-                ),
-            ],
-            linktype: LinkType::Ethernet,
-        };
-
-        let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
-        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
-
-        assert!(result.is_ok());
-        let src_addr = result.unwrap();
-
-        // グローバルユニキャストアドレスが選択されるはず
-        if let IpAddr::V6(addr) = src_addr {
-            use tcpip::ipv6::ipv6_address::IPv6AddrExt;
-            assert!(addr.is_global_unicast());
-            assert!(!addr.is_link_local());
-        } else {
-            panic!("Expected IPv6 address");
-        }
-    }
-
-    #[test]
-    fn test_get_source_addr_for_target_ipv6_link_local_only() {
-        // [正常系] リンクローカルアドレスのみの場合
-
-        let interface = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            mac_addr: Default::default(),
-            ip_addrs: vec![
-                // リンクローカルアドレスのみ
-                IPCIDR::V6(IPv6CIDR::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64).unwrap()),
-            ],
-            linktype: LinkType::Ethernet,
-        };
-
-        let target = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
-        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
-
-        assert!(result.is_ok());
-        let src_addr = result.unwrap();
-
-        // リンクローカルアドレスが選択される（他に選択肢がない）
-        if let IpAddr::V6(addr) = src_addr {
-            assert!(addr.is_link_local());
-            assert!(!addr.is_global_unicast());
-        } else {
-            panic!("Expected IPv6 address");
-        }
-    }
-
-    #[test]
-    fn test_get_source_addr_for_target_ipv4() {
-        // [正常系] IPv4の場合のsource address選択
-
-        let interface = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            mac_addr: Default::default(),
-            ip_addrs: vec![IPCIDR::V4(IPv4CIDR::new(
-                Ipv4Addr::new(192, 168, 1, 100),
-                IPv4Netmask::try_from(Ipv4Addr::new(255, 255, 255, 0)).unwrap(),
-            ))],
-            linktype: LinkType::Ethernet,
-        };
-
-        let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let result = WorkerPool::get_source_addr_for_target(&interface, &target);
-
-        assert!(result.is_ok());
-        let src_addr = result.unwrap();
-        assert_eq!(src_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
     }
 }
