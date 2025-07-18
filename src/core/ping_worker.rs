@@ -65,6 +65,12 @@ pub struct PingResponseReceiver {
     /// ICMP Echo Requestの送信元識別子
     identifier: u16,
 
+    /// タイムアウトチェックのインターバル
+    interval: Duration,
+
+    /// Pingのタイムアウト時間
+    timeout: Duration,
+
     /// 送信済みのPingの情報
     pending_pings: FxHashMap<u16, PendingPing>,
 
@@ -106,6 +112,7 @@ impl PingWorker {
         src: IpAddr,
         target: IpAddr,
         interval: Duration,
+        timeout: Duration,
         tx: mpsc::Sender<IPPacket>,
         rx: broadcast::Receiver<IPPacket>,
         update_tx: mpsc::Sender<UpdateMessage>,
@@ -125,6 +132,8 @@ impl PingWorker {
         };
         let receiver = PingResponseReceiver {
             identifier: id,
+            interval,
+            timeout,
             pending_pings: pendings,
             rx,
             #[cfg(target_os = "linux")]
@@ -255,7 +264,7 @@ impl PingRequestSender {
 
 impl PingResponseReceiver {
     async fn listen_recv_ip_packets(mut self) -> Result<(), PingWorkerError> {
-        let mut timeout_interval = interval(std::time::Duration::from_secs(5)); // 5秒タイムアウト
+        let mut check_interval = interval(self.interval.to_std().expect("Invalid duration"));
 
         loop {
             tokio::select! {
@@ -271,7 +280,7 @@ impl PingResponseReceiver {
                     }
                 }
                 // タイムアウトチェック
-                _ = timeout_interval.tick() => {
+                _ = check_interval.tick() => {
                     self.check_timeouts().await;
                 }
                 else => break,
@@ -435,12 +444,11 @@ impl PingResponseReceiver {
 
     async fn check_timeouts(&mut self) {
         let now = Utc::now();
-        let timeout_duration = Duration::seconds(5); // 5秒タイムアウト
         let mut timed_out = Vec::new();
 
         // タイムアウトしたpingを特定
         for (seq, pending_ping) in &self.pending_pings {
-            if now - pending_ping.sent_at > timeout_duration {
+            if now - pending_ping.sent_at > self.timeout {
                 timed_out.push(*seq);
             }
         }
@@ -501,12 +509,14 @@ mod tests {
         let id = 12345;
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let interval = Duration::seconds(1);
+        let interval = chrono::Duration::seconds(1);
+        let timeout = chrono::Duration::seconds(5);
         let (tx, _rx1) = mpsc::channel(100);
         let (_tx2, rx) = broadcast::channel(100);
         let (update_tx, _update_rx) = mpsc::channel(100);
 
-        let ping_worker = PingWorker::new(token, id, src, target, interval, tx, rx, update_tx);
+        let ping_worker =
+            PingWorker::new(token, id, src, target, interval, timeout, tx, rx, update_tx);
 
         assert_eq!(ping_worker.sender.src, src);
         assert_eq!(ping_worker.sender.target, target);
@@ -550,6 +560,8 @@ mod tests {
     fn test_ping_response_receiver() {
         // [正常系] PingResponseReceiverの作成
         let identifier = 12345;
+        let interval = chrono::Duration::seconds(1);
+        let timeout = chrono::Duration::seconds(5);
         let pending_pings = FxHashMap::default();
         let (_tx1, rx) = broadcast::channel(100);
         #[cfg(target_os = "linux")]
@@ -561,6 +573,8 @@ mod tests {
 
         let receiver = PingResponseReceiver {
             identifier,
+            interval,
+            timeout,
             pending_pings,
             rx,
             #[cfg(target_os = "linux")]
@@ -574,6 +588,8 @@ mod tests {
         };
 
         assert_eq!(receiver.identifier, identifier);
+        assert_eq!(receiver.interval, interval);
+        assert_eq!(receiver.timeout, timeout);
         assert!(receiver.pending_pings.is_empty());
     }
 
@@ -628,6 +644,8 @@ mod tests {
         // [正常系] ICMP Echo Replyの受信
         let identifier = 12345;
         let sequence_number = 100;
+        let interval = chrono::Duration::seconds(1);
+        let timeout = chrono::Duration::seconds(5);
         let mut pending_pings = FxHashMap::default();
         let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let sent_at = Utc::now();
@@ -652,6 +670,8 @@ mod tests {
 
         let mut receiver = PingResponseReceiver {
             identifier,
+            interval,
+            timeout,
             pending_pings,
             rx,
             #[cfg(target_os = "linux")]
@@ -780,6 +800,7 @@ mod tests {
             src,
             target,
             interval,
+            chrono::Duration::seconds(5),
             tx,
             rx,
             update_tx,
@@ -849,6 +870,8 @@ mod tests {
 
         // [正常系] select!ループでの受信処理テスト
         let identifier = 12345;
+        let interval = chrono::Duration::seconds(1);
+        let timeout_duration = chrono::Duration::seconds(5);
         let pending_pings = FxHashMap::default();
         let (tx, rx) = broadcast::channel(100);
         #[cfg(target_os = "linux")]
@@ -860,6 +883,8 @@ mod tests {
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let receiver = PingResponseReceiver {
             identifier,
+            interval,
+            timeout: timeout_duration,
             pending_pings,
             rx,
             #[cfg(target_os = "linux")]
@@ -916,6 +941,8 @@ mod tests {
     async fn test_ping_response_receiver_handle_recv_ip_packet_error_cases() {
         // [異常系] 不正なICMPメッセージの処理
         let identifier = 12345;
+        let interval = chrono::Duration::seconds(1);
+        let timeout = chrono::Duration::seconds(5);
         let pending_pings = FxHashMap::default();
         let (_tx, rx) = broadcast::channel(100);
         #[cfg(target_os = "linux")]
@@ -927,6 +954,8 @@ mod tests {
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let mut receiver = PingResponseReceiver {
             identifier,
+            interval,
+            timeout,
             pending_pings,
             rx,
             #[cfg(target_os = "linux")]
