@@ -20,6 +20,8 @@ pub enum NetlinkError {
     FailedToOpenSocket(io::ErrorKind),
     #[error("No such network interface: index = {0}")]
     NoSuchInterfaceIdx(u32),
+    #[error("No route to host")]
+    NoRouteToHost,
     #[error(transparent)]
     InvalidNetmask(#[from] IPv4NetmaskError),
     #[cfg(target_os = "linux")]
@@ -29,15 +31,15 @@ pub enum NetlinkError {
     #[cfg(target_os = "linux")]
     #[error("Failed to get route message")]
     FailedToGetRouteMessage,
-    #[cfg(target_os = "linux")]
-    #[error("Unsupported link type: {0}")]
-    UnsupportedLinkType(LinkLayerType),
     #[cfg(target_os = "macos")]
     #[error("PF_ROUTE send error: {0}")]
     PfRouteSendError(io::ErrorKind),
     #[cfg(target_os = "macos")]
     #[error("PF_ROUTE receive error: {0}")]
     PfRouteReceiveError(io::ErrorKind),
+    #[cfg(target_os = "linux")]
+    #[error("Unsupported link type: {0}")]
+    UnsupportedLinkType(LinkLayerType),
     #[cfg(target_os = "macos")]
     #[error("Unsupported link type: {0}")]
     UnsupportedLinkType(u8),

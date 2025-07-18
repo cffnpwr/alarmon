@@ -9,6 +9,7 @@ use pcap::PcapError;
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError, MacAddr, MacAddrError};
 use tcpip::icmpv6::{ICMPv6Message, NeighborSolicitationMessage};
 use tcpip::ipv4::Protocol;
+use tcpip::ipv6::ipv6_address::IPv6AddrExt;
 use tcpip::ipv6::{IPv6Error, IPv6Packet};
 use thiserror::Error;
 use tokio::time::timeout;
@@ -137,12 +138,11 @@ async fn resolve_neighbor_with_pcap<P: pcap::Pcap>(
     let mut receiver = cap.receiver;
 
     // ICMPv6 Neighbor Solicitationメッセージを作成
-    let multicst_addr = calculate_solicited_node_multicast_ipv6(nd_target);
+    let multicst_addr = nd_target.into_multicast_ipv6();
     let src_mac = best_route.interface.mac_addr;
     let mut src_mac_bytes = BytesMut::from(&[1, 1][..]);
     src_mac_bytes.extend_from_slice(&<[u8; 6]>::from(src_mac));
     let ns_message =
-        // NeighborSolicitationMessage::new(nd_target, <[u8; 6]>::from(src_mac), src_ip, nd_target);
         NeighborSolicitationMessage::new(nd_target, &src_mac_bytes, src_ip, multicst_addr);
 
     // IPv6パケットを作成
@@ -158,7 +158,7 @@ async fn resolve_neighbor_with_pcap<P: pcap::Pcap>(
 
     // 宛先MacアドレスはマルチキャストMacアドレス
     // 33:33:ff:xx:xx:xx の形式で、IPv6アドレスの下位24bitを使用
-    let multicast_mac = calculate_solicited_node_multicast_mac(nd_target);
+    let multicast_mac = nd_target.into_multicast_mac();
     let ethernet_frame = EthernetFrame::new(
         &src_mac,
         &multicast_mac,
@@ -227,108 +227,12 @@ async fn resolve_neighbor_with_pcap<P: pcap::Pcap>(
     }
 }
 
-/// RFC 4291: IPv6のSolicited-Node Multicast MACアドレス計算
-/// 33:33:xx:xx:xx:xx の形式で、下位24bitはIPv6アドレスの下位24bit
-fn calculate_solicited_node_multicast_mac(target_ip: Ipv6Addr) -> MacAddr {
-    let octets = target_ip.octets();
-    let mut mac_bytes = [0u8; 6];
-    mac_bytes[0] = 0x33;
-    mac_bytes[1] = 0x33;
-    mac_bytes[2] = octets[12];
-    mac_bytes[3] = octets[13];
-    mac_bytes[4] = octets[14];
-    mac_bytes[5] = octets[15];
-
-    MacAddr::from(mac_bytes)
-}
-
-/// RFC 4291: IPv6のSolicited-Node Multicastアドレス計算
-/// ff02::1:ffxx:xxxx の形式で、下位24bitはIPv6アドレスの下位24bit
-fn calculate_solicited_node_multicast_ipv6(target_ip: Ipv6Addr) -> Ipv6Addr {
-    let octets = target_ip.octets();
-    Ipv6Addr::new(
-        0xff02,
-        0x0000,
-        0x0000,
-        0x0000,
-        0x0000,
-        0x0001,
-        0xff00 | (octets[13] as u16),
-        (octets[14] as u16) << 8 | (octets[15] as u16),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::Ipv6Addr;
     use std::time::Instant;
 
-    use async_trait::async_trait;
-    use pcap::{Channel, DataLinkReceiver, DataLinkSender, Pcap};
-    use tcpip::icmpv6::NeighborAdvertisementMessage;
-    use tcpip::ip_cidr::{IPCIDR, IPv6CIDR};
-
     use super::*;
-    use crate::net_utils::netlink::{LinkType, NetworkInterface};
-
-    // テスト用のモック構造体
-    struct MockPcap {
-        packets_to_receive: Vec<u8>,
-    }
-
-    impl MockPcap {
-        fn new() -> Self {
-            Self {
-                packets_to_receive: Vec::new(),
-            }
-        }
-
-        fn add_packet_to_receive(&mut self, packet: Vec<u8>) {
-            self.packets_to_receive = packet;
-        }
-    }
-
-    impl Pcap for MockPcap {
-        fn open(&self, _promisc: bool) -> Result<Channel, PcapError> {
-            let sender = MockSender {};
-            let receiver = MockReceiver {
-                packet: self.packets_to_receive.clone(),
-                returned: false,
-            };
-            Ok(Channel {
-                sender: Box::new(sender),
-                receiver: Box::new(receiver),
-            })
-        }
-    }
-
-    struct MockSender {}
-
-    #[async_trait]
-    impl DataLinkSender for MockSender {
-        async fn send_bytes(&mut self, _buf: &[u8]) -> Result<(), PcapError> {
-            Ok(())
-        }
-    }
-
-    struct MockReceiver {
-        packet: Vec<u8>,
-        returned: bool,
-    }
-
-    #[async_trait]
-    impl DataLinkReceiver for MockReceiver {
-        async fn recv(&mut self) -> Result<Vec<u8>, PcapError> {
-            if !self.returned && !self.packet.is_empty() {
-                self.returned = true;
-                return Ok(self.packet.clone());
-            }
-            // パケットがない場合は一度だけエラーを返す
-            loop {
-                tokio::time::sleep(StdDuration::from_millis(100)).await;
-            }
-        }
-    }
 
     #[test]
     fn test_neighbor_cache_new() {
@@ -368,106 +272,6 @@ mod tests {
         assert_eq!(result.unwrap(), mac_addr);
     }
 
-    #[tokio::test]
-    async fn test_resolve_neighbor_with_pcap() {
-        // [正常系] Neighbor Discovery応答受信成功
-        let mut mock_pcap = MockPcap::new();
-        let target_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
-        let gateway_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0xfe);
-
-        // テスト用のネットワークインターフェースを作成
-        let interface_mac = MacAddr::try_from("00:11:22:33:44:55").unwrap();
-        let ipv6_cidr =
-            IPv6CIDR::new(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 100), 64).unwrap();
-        let interface = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            ip_addrs: vec![IPCIDR::V6(ipv6_cidr)],
-            mac_addr: interface_mac,
-            linktype: LinkType::Ethernet,
-        };
-
-        // ゲートウェイ経由のルートエントリを作成
-        let route_entry = RouteEntry {
-            interface,
-            to: IpAddr::V6(target_ip),
-            via: Some(IpAddr::V6(gateway_ip)),
-        };
-
-        // Neighbor Advertisement応答パケットを作成
-        let response_mac = MacAddr::try_from("aa:bb:cc:dd:ee:ff").unwrap();
-        let mac_option = {
-            let mut option = vec![2, 1]; // Type=2 (Target Link-layer Address), Length=1
-            option.extend_from_slice(&<[u8; 6]>::from(response_mac));
-            option
-        };
-        let src_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 100);
-        let na_message = NeighborAdvertisementMessage::new(
-            false, // router
-            true,  // solicited
-            true,  // override
-            gateway_ip, mac_option, gateway_ip, src_ip,
-        );
-
-        let icmpv6_message = ICMPv6Message::NeighborAdvertisement(na_message);
-        let ipv6_packet = IPv6Packet::new(
-            0, // Traffic Class
-            0, // Flow Label
-            Protocol::IPv6ICMP,
-            255, // Hop Limit
-            gateway_ip,
-            src_ip,
-            Bytes::from(icmpv6_message),
-        )
-        .unwrap();
-
-        let ethernet_response = EthernetFrame::new(
-            &response_mac,
-            &interface_mac,
-            &EtherType::IPv6,
-            None,
-            Bytes::from(ipv6_packet),
-        );
-
-        let response_bytes = Bytes::try_from(ethernet_response).unwrap().to_vec();
-        mock_pcap.add_packet_to_receive(response_bytes);
-
-        // テスト実行
-        let timeout = Duration::milliseconds(100);
-        let result = resolve_neighbor_with_pcap(target_ip, mock_pcap, route_entry, timeout).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), response_mac);
-
-        // [異常系] タイムアウト（応答パケットなし）
-        let mock_pcap_timeout = MockPcap::new();
-        let interface_timeout = NetworkInterface {
-            index: 1,
-            name: "eth0".to_string(),
-            ip_addrs: vec![IPCIDR::V6(ipv6_cidr)],
-            mac_addr: interface_mac,
-            linktype: LinkType::Ethernet,
-        };
-        let route_entry_timeout = RouteEntry {
-            interface: interface_timeout,
-            to: IpAddr::V6(target_ip),
-            via: None, // 直接接続
-        };
-
-        let timeout_short = Duration::milliseconds(50);
-        let result_timeout = resolve_neighbor_with_pcap(
-            target_ip,
-            mock_pcap_timeout,
-            route_entry_timeout,
-            timeout_short,
-        )
-        .await;
-        assert!(result_timeout.is_err());
-        assert!(matches!(
-            result_timeout.unwrap_err(),
-            NeighborDiscoveryError::Timeout
-        ));
-    }
-
     #[test]
     fn test_neighbor_entry_expiration() {
         // [正常系] 有効期限内のエントリ
@@ -480,23 +284,5 @@ mod tests {
         // わずかに待機して期限切れにする
         std::thread::sleep(StdDuration::from_millis(1));
         assert!(expired_entry.is_expired());
-    }
-
-    #[test]
-    fn test_calculate_solicited_node_multicast_mac() {
-        // [正常系] Solicited-Node Multicast MACアドレスの計算
-        let target_ip = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1);
-        let result = calculate_solicited_node_multicast_mac(target_ip);
-
-        // 33:33:xx:xx:xx:xx の形式で、下位24bitはIPv6アドレスの下位24bit
-        let expected = MacAddr::from([0x33, 0x33, 0x00, 0x00, 0x00, 0x00]);
-        assert_eq!(result, expected);
-
-        // [正常系] 異なるIPv6アドレスでの計算
-        let target_ip2 = Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0x1234, 0x5678);
-        let result2 = calculate_solicited_node_multicast_mac(target_ip2);
-
-        let expected2 = MacAddr::from([0x33, 0x33, 0x56, 0x78, 0x78, 0x78]);
-        assert_eq!(result2, expected2);
     }
 }

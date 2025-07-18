@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use tcpip::ethernet::MacAddr;
@@ -16,6 +17,18 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[derive(Debug, Clone, Copy)]
+pub struct IPv6AddressFlags {
+    pub deprecated: bool,
+    pub temporary: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IPv6AddressInfo {
+    address: Ipv6Addr,
+    flags: IPv6AddressFlags,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NetworkInterface {
     pub index: u32,
@@ -26,6 +39,12 @@ pub struct NetworkInterface {
 }
 impl NetworkInterface {
     pub fn get_best_source_ip(&self, target_ip: &IpAddr) -> Option<IpAddr> {
+        #[cfg(target_os = "linux")]
+        if self.linktype == LinkType::Loopback {
+            // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
+            return Ok(*ping_target);
+        }
+
         match target_ip {
             IpAddr::V4(ipv4_addr) => self.get_best_source_ipv4(ipv4_addr).map(IpAddr::V4),
             IpAddr::V6(ipv6_addr) => self.get_best_source_ipv6(ipv6_addr).map(IpAddr::V6),
@@ -67,50 +86,25 @@ impl NetworkInterface {
         }
     }
 
-    pub fn get_best_source_ipv6(&self, target_ip: &Ipv6Addr) -> Option<Ipv6Addr> {
-        let mut best_match: Option<(Ipv6Addr, u8)> = None;
-
-        for ip_cidr in &self.ip_addrs {
-            if let IPCIDR::V6(ipv6_cidr) = ip_cidr {
-                if ipv6_cidr.contains(target_ip) {
-                    let prefix_length = ipv6_cidr.prefix_length;
-
-                    match best_match {
-                        None => {
-                            best_match = Some((ipv6_cidr.address, prefix_length));
-                        }
-                        Some((_, current_prefix)) => {
-                            if prefix_length > current_prefix {
-                                best_match = Some((ipv6_cidr.address, prefix_length));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        match best_match {
-            Some((ip, _)) => Some(ip),
-            None => {
-                for ip_cidr in &self.ip_addrs {
-                    if let IPCIDR::V6(ipv6_cidr) = ip_cidr {
-                        return Some(ipv6_cidr.address);
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    /// IPv6アドレスの中からルーティングに適した最適なアドレスを選択
-    /// RFC 3484のSource Address Selection規則に基づいて優先順位を決定
-    pub fn get_preferred_ipv6_address(&self) -> Option<Ipv6Addr> {
-        let mut candidates: Vec<Ipv6Addr> = self
+    /// グローバルユニキャストIPv6アドレスの中から最適なソースアドレスを選択
+    /// RFC 6724のSource Address Selection規則に基づいて優先順位を決定
+    pub fn get_best_source_ipv6(&self, destination: &Ipv6Addr) -> Option<Ipv6Addr> {
+        // 1. 全IPv6アドレスのフラグを取得
+        let mut candidates: Vec<IPv6AddressInfo> = self
             .ip_addrs
             .iter()
             .filter_map(|cidr| {
                 if let IPCIDR::V6(ipv6_cidr) = cidr {
-                    Some(ipv6_cidr.address)
+                    let addr = ipv6_cidr.address;
+                    if addr.is_global_unicast() {
+                        let flags = self.get_ipv6_flags(addr).ok()?;
+                        Some(IPv6AddressInfo {
+                            address: addr,
+                            flags,
+                        })
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -121,41 +115,62 @@ impl NetworkInterface {
             return None;
         }
 
-        // RFC 3484のSource Address Selection規則に基づいて優先順位を決定
-        candidates.sort_by(|a, b| {
-            self.ipv6_address_priority(a)
-                .cmp(&self.ipv6_address_priority(b))
-        });
+        // 2. RFC 6724でソート
+        candidates.sort_by(|a, b| self.compare_ipv6(a, b, destination));
 
-        candidates.into_iter().next()
+        // 3. 先頭を返す
+        Some(candidates[0].address)
     }
 
-    /// IPv6アドレスの優先順位を返す（数値が小さいほど優先度が高い）
-    fn ipv6_address_priority(&self, addr: &Ipv6Addr) -> u8 {
-        // ループバックアドレスは除外
-        if addr.is_loopback() {
-            return 100;
+    fn compare_ipv6(&self, a: &IPv6AddressInfo, b: &IPv6AddressInfo, dest: &Ipv6Addr) -> Ordering {
+        // Rule 1: Same address
+        if a.address == *dest && b.address != *dest {
+            return Ordering::Less;
+        }
+        if b.address == *dest && a.address != *dest {
+            return Ordering::Greater;
         }
 
-        // リンクローカルアドレスは最低優先度
-        if addr.is_link_local() {
-            return 90;
+        // Rule 3: Avoid deprecated
+        match (a.flags.deprecated, b.flags.deprecated) {
+            (false, true) => return Ordering::Less,
+            (true, false) => return Ordering::Greater,
+            _ => {}
         }
 
-        // グローバルユニキャストアドレスが最優先
-        if addr.is_global_unicast() {
-            return 1;
+        // Rule 7: Prefer temporary
+        match (a.flags.temporary, b.flags.temporary) {
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            _ => {}
         }
 
-        // ユニークローカルアドレスは2番目の優先度
-        if addr.is_unique_local() {
-            return 2;
+        // Rule 8: Longest prefix
+        let prefix_a = self.common_prefix_length(&a.address, dest);
+        let prefix_b = self.common_prefix_length(&b.address, dest);
+        prefix_b.cmp(&prefix_a)
+    }
+
+    /// 2つのIPv6アドレス間の共通プレフィックス長を計算
+    fn common_prefix_length(&self, addr1: &Ipv6Addr, addr2: &Ipv6Addr) -> u32 {
+        let octets1 = addr1.octets();
+        let octets2 = addr2.octets();
+
+        let mut common_bits = 0;
+        for i in 0..16 {
+            let xor = octets1[i] ^ octets2[i];
+            if xor == 0 {
+                common_bits += 8;
+            } else {
+                common_bits += xor.leading_zeros();
+                break;
+            }
         }
 
-        // その他のアドレスは低優先度
-        80
+        common_bits
     }
 }
+
 impl From<NetworkInterface> for pcap::NetworkInterface {
     fn from(ni: NetworkInterface) -> Self {
         pcap::NetworkInterface::new(ni.index, ni.name)

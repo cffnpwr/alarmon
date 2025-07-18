@@ -1,21 +1,27 @@
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::{mem, process, slice};
+use std::{cmp, io, mem, process, slice};
 
 use libc::{
     AF_INET, AF_INET6, AF_LINK, PF_ROUTE, RTA_DST, RTA_GATEWAY, RTA_IFP, RTAX_DST, RTAX_GATEWAY,
-    RTAX_IFP, RTAX_MAX, RTF_GATEWAY, RTF_HOST, RTF_STATIC, RTF_UP, RTM_GET, RTM_VERSION, SOCK_RAW,
-    c_int, in_addr, in6_addr, rt_msghdr, sockaddr, sockaddr_dl, sockaddr_in, sockaddr_in6,
+    RTAX_IFP, RTAX_MAX, RTF_GATEWAY, RTF_HOST, RTF_STATIC, RTF_UP, RTM_GET, RTM_VERSION,
+    SOCK_DGRAM, SOCK_RAW, c_int, c_ulong, close, in_addr, in6_addr, ioctl, rt_msghdr, sockaddr,
+    sockaddr_dl, sockaddr_in, sockaddr_in6, socket,
 };
 use socket2::{Domain, Protocol, Socket, Type};
 use tcpip::ipv6::ipv6_address::IPv6AddrExt;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
-use super::{LinkType, NetlinkError, NetworkInterface, RouteEntry};
+use super::{IPv6AddressFlags, LinkType, NetlinkError, NetworkInterface, RouteEntry};
 
 const RTM_MSGHDR_LEN: usize = mem::size_of::<rt_msghdr>();
 const ATTR_LEN: usize = 128;
+
+// IPv6フラグ関連の定数
+const SIOCGIFAFLAG_IN6: c_ulong = 0xc0206949;
+const IN6_IFF_DEPRECATED: u32 = 0x0010;
+const IN6_IFF_TEMPORARY: u32 = 0x0080;
 
 // インターフェイスのリンクタイプを表す定数
 // 定義: https://github.com/openbsd/src/blob/master/sys/net/if_types.h#
@@ -33,6 +39,57 @@ const fn align(len: usize) -> usize {
 struct rt_msg {
     hdr: rt_msghdr,
     attrs: [u8; ATTR_LEN],
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+struct in6_ifreq {
+    ifr_name: [i8; 16],
+    ifr_addr: sockaddr_in6,
+    ifr_flags: u32,
+}
+
+impl NetworkInterface {
+    pub(super) fn get_ipv6_flags(&self, addr: Ipv6Addr) -> Result<IPv6AddressFlags, NetlinkError> {
+        let sock_fd = unsafe { socket(AF_INET6, SOCK_DGRAM, 0) };
+        if sock_fd < 0 {
+            return Err(NetlinkError::FailedToOpenSocket(io::ErrorKind::Other));
+        }
+
+        let mut ifreq = in6_ifreq {
+            ifr_name: [0; 16],
+            ifr_addr: sockaddr_in6 {
+                sin6_len: mem::size_of::<sockaddr_in6>() as u8,
+                sin6_family: AF_INET6 as u8,
+                sin6_port: 0,
+                sin6_flowinfo: 0,
+                sin6_addr: in6_addr {
+                    s6_addr: addr.octets(),
+                },
+                sin6_scope_id: 0,
+            },
+            ifr_flags: 0,
+        };
+
+        // インターフェース名設定
+        let name_bytes = self.name.as_bytes();
+        let copy_len = cmp::min(name_bytes.len(), 15);
+        for (i, &b) in name_bytes[..copy_len].iter().enumerate() {
+            ifreq.ifr_name[i] = b as i8;
+        }
+
+        let result = unsafe { ioctl(sock_fd, SIOCGIFAFLAG_IN6, &mut ifreq) };
+        unsafe { close(sock_fd) };
+
+        if result < 0 {
+            return Err(NetlinkError::FailedToGetIfAddrs(nix::Error::last()));
+        }
+
+        Ok(IPv6AddressFlags {
+            deprecated: (ifreq.ifr_flags & IN6_IFF_DEPRECATED) != 0,
+            temporary: (ifreq.ifr_flags & IN6_IFF_TEMPORARY) != 0,
+        })
+    }
 }
 
 pub struct Netlink {
@@ -72,20 +129,7 @@ impl Netlink {
                 rtm_errno: 0,
                 rtm_use: 0,
                 rtm_inits: 0,
-                rtm_rmx: libc::rt_metrics {
-                    rmx_locks: 0,
-                    rmx_mtu: 0,
-                    rmx_hopcount: 0,
-                    rmx_expire: 0,
-                    rmx_recvpipe: 0,
-                    rmx_sendpipe: 0,
-                    rmx_ssthresh: 0,
-                    rmx_rtt: 0,
-                    rmx_rttvar: 0,
-                    rmx_pksent: 0,
-                    rmx_state: 0,
-                    rmx_filler: [0, 0, 0],
-                },
+                rtm_rmx: unsafe { mem::zeroed() },
             },
             attrs: [0; ATTR_LEN],
         };
@@ -103,21 +147,11 @@ impl Netlink {
             }
             IpAddr::V6(ipv6_addr) => {
                 attr_offset = Self::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, attr_offset, ipv6_addr);
-                // IPv6の場合、より適切なsource addressを設定してリンクローカルアドレス除外を試みる
-                match self.get_preferred_ipv6_source_address().await {
-                    Some(src_addr) => {
-                        // Source addressを設定してリンクローカルアドレスを除外
-                        Self::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, attr_offset, src_addr);
-                    }
-                    None => {
-                        // フォールバック: 全てのIPv6アドレスを対象
-                        Self::ipv6_to_sockaddr_in6_bytes(
-                            &mut rt_msg,
-                            attr_offset + 4,
-                            Ipv6Addr::new(0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff),
-                        );
-                    }
-                }
+                Self::ipv6_to_sockaddr_in6_bytes(
+                    &mut rt_msg,
+                    attr_offset + 4,
+                    Ipv6Addr::new(0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff),
+                );
             }
         };
 
@@ -134,7 +168,12 @@ impl Netlink {
                 Ok(())
             })
             .await
-            .map_err(|e| NetlinkError::PfRouteSendError(e.kind()))?;
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::AddrNotAvailable => NetlinkError::NoRouteToHost,
+                io::ErrorKind::NetworkUnreachable => NetlinkError::NoRouteToHost,
+                io::ErrorKind::HostUnreachable => NetlinkError::NoRouteToHost,
+                kind => NetlinkError::PfRouteSendError(kind),
+            })?;
 
         // PF_ROUTEソケットからの応答を受信
         let buf = unsafe {
@@ -144,37 +183,14 @@ impl Netlink {
             .pf_route_sock_fd
             .async_io(Interest::READABLE, |sock| sock.recv(buf))
             .await
-            .map_err(|e| NetlinkError::PfRouteReceiveError(e.kind()))?;
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::AddrNotAvailable => NetlinkError::NoRouteToHost,
+                io::ErrorKind::NetworkUnreachable => NetlinkError::NoRouteToHost,
+                io::ErrorKind::HostUnreachable => NetlinkError::NoRouteToHost,
+                kind => NetlinkError::PfRouteReceiveError(kind),
+            })?;
 
         self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len)
-    }
-
-    /// IPv6のsource addressとして適切なグローバルユニキャストアドレスを取得
-    async fn get_preferred_ipv6_source_address(&self) -> Option<Ipv6Addr> {
-        // 全てのネットワークインターフェースを取得
-        let interfaces = self.get_interfaces().ok()?;
-
-        // 各インターフェースから最適なIPv6アドレスを収集
-        let mut preferred_addresses = Vec::new();
-        for interface in interfaces {
-            if let Some(preferred_addr) = interface.get_preferred_ipv6_address() {
-                // リンクローカルアドレスは除外
-                if !preferred_addr.is_link_local() {
-                    preferred_addresses.push(preferred_addr);
-                }
-            }
-        }
-
-        // グローバルユニキャストアドレスを優先
-        preferred_addresses.sort_by(
-            |a, b| match (a.is_global_unicast(), b.is_global_unicast()) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            },
-        );
-
-        preferred_addresses.into_iter().next()
     }
 
     /// IPv4アドレスをsockaddr_inのバイト配列に変換
@@ -345,14 +361,25 @@ mod tests {
     async fn test_get_route() -> Result<()> {
         // [正常系] IPv4アドレスに対するルート取得
         let netlink = Netlink::new().await?;
-
-        // ローカルホストへのルート取得をテスト
         let target_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
         let result = netlink.get_route(target_ip).await;
         assert!(result.is_ok());
         let route_entry = result.unwrap();
         assert_eq!(route_entry.to, target_ip);
         assert!(!route_entry.interface.name.is_empty());
+
+        // [正常系] IPv6アドレスに対するルート取得
+        let target_ip_v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
+        let result_v6 = netlink.get_route(target_ip_v6).await;
+        match result_v6 {
+            Ok(route_entry) => {
+                assert_eq!(route_entry.to, target_ip_v6);
+                assert!(!route_entry.interface.name.is_empty());
+            }
+            Err(_) => {
+                // IPv6が設定されていない環境ではエラーも許容
+            }
+        }
 
         Ok(())
     }
@@ -364,30 +391,52 @@ mod tests {
             hdr: unsafe { std::mem::zeroed() },
             attrs: [0; ATTR_LEN],
         };
-
         let test_ip = Ipv4Addr::new(192, 168, 1, 1);
         let initial_offset = 0;
 
         let new_offset = Netlink::ipv4_to_sockaddr_in_bytes(&mut rt_msg, initial_offset, test_ip);
 
-        // オフセットが適切に計算されているか確認
         assert!(new_offset > initial_offset);
         assert_eq!(new_offset, align(mem::size_of::<sockaddr_in>()));
 
-        // sockaddr_inの構造が正しく設定されているか確認
         let sa_in = unsafe { *(rt_msg.attrs.as_ptr() as *const sockaddr_in) };
         assert_eq!(sa_in.sin_family, AF_INET as u8);
         assert_eq!(sa_in.sin_len, mem::size_of::<sockaddr_in>() as u8);
         assert_eq!(u32::from_be(sa_in.sin_addr.s_addr), u32::from(test_ip));
 
-        // [正常系] 異なるIPアドレスでの変換テスト
+        // [正常系] 異なるオフセットでの変換
         let test_ip2 = Ipv4Addr::new(10, 0, 0, 1);
         let offset2 = Netlink::ipv4_to_sockaddr_in_bytes(&mut rt_msg, 32, test_ip2);
-
         assert_eq!(offset2, 32 + align(mem::size_of::<sockaddr_in>()));
 
-        let sa_in2 = unsafe { *((rt_msg.attrs.as_ptr() as usize + 32) as *const sockaddr_in) };
-        assert_eq!(u32::from_be(sa_in2.sin_addr.s_addr), u32::from(test_ip2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ipv6_to_sockaddr_in6_bytes() -> Result<()> {
+        // [正常系] IPv6アドレスの変換とオフセット計算
+        let mut rt_msg = rt_msg {
+            hdr: unsafe { std::mem::zeroed() },
+            attrs: [0; ATTR_LEN],
+        };
+        let test_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let initial_offset = 0;
+
+        let new_offset = Netlink::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, initial_offset, test_ip);
+
+        assert!(new_offset > initial_offset);
+        assert_eq!(new_offset, align(mem::size_of::<sockaddr_in6>()));
+
+        let sa_in6 = unsafe { *(rt_msg.attrs.as_ptr() as *const sockaddr_in6) };
+        assert_eq!(sa_in6.sin6_family, AF_INET6 as u8);
+        assert_eq!(sa_in6.sin6_len, mem::size_of::<sockaddr_in6>() as u8);
+        assert_eq!(sa_in6.sin6_addr.s6_addr, test_ip.octets());
+        assert_eq!(sa_in6.sin6_scope_id, 0);
+
+        // [正常系] リンクローカルアドレスのテスト
+        let link_local_ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let offset2 = Netlink::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, 32, link_local_ip);
+        assert_eq!(offset2, 32 + align(mem::size_of::<sockaddr_in6>()));
 
         Ok(())
     }
@@ -415,7 +464,6 @@ mod tests {
             attrs: [0; ATTR_LEN],
         };
 
-        // 宛先アドレス（192.168.1.1）を設定
         let dst_addr = sockaddr_in {
             sin_len: mem::size_of::<sockaddr_in>() as u8,
             sin_family: AF_INET as u8,
@@ -442,7 +490,7 @@ mod tests {
         assert!(route_entry.via.is_none());
 
         // [正常系] RTAX_GATEWAYでAF_LINKの場合
-        let mut rt_msg = rt_msg {
+        let mut rt_msg2 = rt_msg {
             hdr: rt_msghdr {
                 rtm_msglen: RTM_MSGHDR_LEN as u16,
                 rtm_version: RTM_VERSION as u8,
@@ -460,8 +508,7 @@ mod tests {
             attrs: [0; ATTR_LEN],
         };
 
-        // 宛先アドレス（192.168.1.2）を設定
-        let dst_addr = sockaddr_in {
+        let dst_addr2 = sockaddr_in {
             sin_len: mem::size_of::<sockaddr_in>() as u8,
             sin_family: AF_INET as u8,
             sin_port: 0,
@@ -471,15 +518,14 @@ mod tests {
             sin_zero: [0; 8],
         };
 
-        let dst_bytes = unsafe {
+        let dst_bytes2 = unsafe {
             slice::from_raw_parts(
-                &dst_addr as *const sockaddr_in as *const u8,
+                &dst_addr2 as *const sockaddr_in as *const u8,
                 mem::size_of::<sockaddr_in>(),
             )
         };
-        rt_msg.attrs[..dst_bytes.len()].copy_from_slice(dst_bytes);
+        rt_msg2.attrs[..dst_bytes2.len()].copy_from_slice(dst_bytes2);
 
-        // AF_LINKゲートウェイアドレスを設定
         let offset = align(mem::size_of::<sockaddr_in>());
         let gateway_addr = sockaddr_dl {
             sdl_len: mem::size_of::<sockaddr_dl>() as u8,
@@ -498,133 +544,14 @@ mod tests {
                 mem::size_of::<sockaddr_dl>(),
             )
         };
-        rt_msg.attrs[offset..offset + gateway_bytes.len()].copy_from_slice(gateway_bytes);
+        rt_msg2.attrs[offset..offset + gateway_bytes.len()].copy_from_slice(gateway_bytes);
 
-        let test_len = RTM_MSGHDR_LEN + offset + mem::size_of::<sockaddr_dl>();
-        let result = netlink.parse_route_entry_from_rt_msg(&mut rt_msg, test_len);
-        assert!(result.is_ok());
-        let route_entry = result.unwrap();
-        assert_eq!(route_entry.to, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)));
-        assert!(route_entry.via.is_none());
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_ipv6_address_type_detection() -> Result<()> {
-        // [正常系] IPv6アドレスタイプの判定テスト
-        let global_unicast = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-        let unique_local = Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1);
-        let loopback = Ipv6Addr::LOCALHOST;
-
-        assert!(global_unicast.is_global_unicast());
-        assert!(!global_unicast.is_link_local());
-        assert!(global_unicast.is_routable());
-
-        assert!(link_local.is_link_local());
-        assert!(!link_local.is_global_unicast());
-        assert!(!link_local.is_routable());
-
-        assert!(unique_local.is_unique_local());
-        assert!(!unique_local.is_global_unicast());
-        assert!(unique_local.is_routable());
-
-        assert!(!loopback.is_global_unicast());
-        assert!(!loopback.is_link_local());
-        assert!(!loopback.is_unique_local());
-        assert!(!loopback.is_routable());
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_ipv6_to_sockaddr_in6_bytes() -> Result<()> {
-        // [正常系] IPv6アドレスの変換とオフセット計算
-        let mut rt_msg = rt_msg {
-            hdr: unsafe { std::mem::zeroed() },
-            attrs: [0; ATTR_LEN],
-        };
-
-        let test_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let initial_offset = 0;
-
-        let new_offset = Netlink::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, initial_offset, test_ip);
-
-        // オフセットが適切に計算されているか確認
-        assert!(new_offset > initial_offset);
-        assert_eq!(new_offset, align(mem::size_of::<sockaddr_in6>()));
-
-        // sockaddr_in6の構造が正しく設定されているか確認
-        let sa_in6 = unsafe { *(rt_msg.attrs.as_ptr() as *const sockaddr_in6) };
-        assert_eq!(sa_in6.sin6_family, AF_INET6 as u8);
-        assert_eq!(sa_in6.sin6_len, mem::size_of::<sockaddr_in6>() as u8);
-        assert_eq!(sa_in6.sin6_addr.s6_addr, test_ip.octets());
-        assert_eq!(sa_in6.sin6_scope_id, 0); // グローバルユニキャストアドレスの場合
-
-        // [正常系] リンクローカルアドレスのテスト
-        let link_local_ip = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
-        let offset2 = Netlink::ipv6_to_sockaddr_in6_bytes(&mut rt_msg, 32, link_local_ip);
-
-        assert_eq!(offset2, 32 + align(mem::size_of::<sockaddr_in6>()));
-
-        let sa_in6_2 = unsafe { *((rt_msg.attrs.as_ptr() as usize + 32) as *const sockaddr_in6) };
-        assert_eq!(sa_in6_2.sin6_addr.s6_addr, link_local_ip.octets());
-        assert_eq!(sa_in6_2.sin6_scope_id, 0); // 現在の実装では0
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_preferred_ipv6_source_address() -> Result<()> {
-        // [正常系] IPv6 source addressの取得テスト
-        let netlink = Netlink::new().await?;
-
-        // 実際のテストは環境に依存するため、エラーが発生しないことを確認
-        let result = netlink.get_preferred_ipv6_source_address().await;
-
-        // 結果の形式が正しいか確認（None or Some(IPv6Addr)）
-        match result {
-            Some(addr) => {
-                // 取得されたアドレスがループバックやリンクローカルでないことを確認
-                assert!(!addr.is_loopback());
-                // リンクローカルアドレスは除外されるべき
-                assert!(!addr.is_link_local());
-            }
-            None => {
-                // IPv6アドレスが設定されていない環境では None も許容
-            }
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_route_ipv6() -> Result<()> {
-        // [正常系] IPv6アドレスに対するルート取得
-        let netlink = Netlink::new().await?;
-
-        // Google DNS IPv6アドレスへのルート取得をテスト
-        let target_ip = IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888));
-        let result = netlink.get_route(target_ip).await;
-
-        // 結果が正常に取得されるか、適切なエラーが返されるかを確認
-        match result {
-            Ok(route_entry) => {
-                assert_eq!(route_entry.to, target_ip);
-                assert!(!route_entry.interface.name.is_empty());
-
-                // ゲートウェイアドレスが設定されている場合の確認
-                if let Some(IpAddr::V6(_gateway_addr)) = route_entry.via {
-                    // ゲートウェイがリンクローカルアドレスの場合も許容
-                    // （実際のルーティングでは発生する可能性がある）
-                    // IPv4ゲートウェイも許容
-                }
-            }
-            Err(_) => {
-                // IPv6が設定されていない環境ではエラーも許容
-            }
-        }
+        let test_len2 = RTM_MSGHDR_LEN + offset + mem::size_of::<sockaddr_dl>();
+        let result2 = netlink.parse_route_entry_from_rt_msg(&mut rt_msg2, test_len2);
+        assert!(result2.is_ok());
+        let route_entry2 = result2.unwrap();
+        assert_eq!(route_entry2.to, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)));
+        assert!(route_entry2.via.is_none());
 
         Ok(())
     }

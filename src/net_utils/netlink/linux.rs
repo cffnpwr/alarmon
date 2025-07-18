@@ -12,7 +12,7 @@ use rtnetlink::packet_route::route::{RouteMessage, RouteProtocol, RouteScope, Ro
 use rtnetlink::sys::AsyncSocket as _;
 use rtnetlink::{Handle, RouteMessageBuilder, new_connection, try_rtnl};
 
-use super::{LinkType, NetlinkError, RouteEntry};
+use super::{IPv6AddressFlags, LinkType, NetlinkError, NetworkInterface, RouteEntry};
 
 pub struct Netlink {
     handle: Handle,
@@ -30,42 +30,40 @@ impl Netlink {
         Ok(Self { handle })
     }
 
-    pub async fn get_route(&mut self, target_ip: Ipv4Addr) -> Result<RouteEntry, NetlinkError> {
-        let builder = RouteMessageBuilder::<Ipv4Addr>::new();
+    pub async fn get_route(&mut self, target_ip: IpAddr) -> Result<RouteEntry, NetlinkError> {
+        let prefix_length = match target_ip {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+
+        let builder = RouteMessageBuilder::<IpAddr>::new();
         let req_msg = builder
-            .destination_prefix(target_ip, 32)
-            .table_id(0) // RT_TABLE_UNSPEC（C言語と同じ）
-            .protocol(RouteProtocol::Unspec) // RTPROT_UNSPEC（C言語と同じ）
-            .scope(RouteScope::Universe) // RT_SCOPE_UNIVERSE（C言語と同じ）
-            .kind(RouteType::Unspec) // RTN_UNSPEC（C言語と同じ）
+            .destination_prefix(target_ip, prefix_length)
+            .table_id(0)
+            .protocol(RouteProtocol::Unspec)
+            .scope(RouteScope::Universe)
+            .kind(RouteType::Unspec)
             .build();
 
         let mut resp = self.execute_get_route_request(req_msg);
         let resp_msg = resp
             .try_next()
-            .await?
-            .ok_or(NetlinkError::FailedToGetRouteMessage)?;
-
-        self.parse_route_entry_from_route_msg(resp_msg).await
-    }
-
-    pub async fn get_ipv6_route(
-        &mut self,
-        target_ip: Ipv6Addr,
-    ) -> Result<RouteEntry, NetlinkError> {
-        let builder = RouteMessageBuilder::<Ipv6Addr>::new();
-        let req_msg = builder
-            .destination_prefix(target_ip, 128)
-            .table_id(0) // RT_TABLE_UNSPEC（C言語と同じ）
-            .protocol(RouteProtocol::Unspec) // RTPROT_UNSPEC（C言語と同じ）
-            .scope(RouteScope::Universe) // RT_SCOPE_UNIVERSE（C言語と同じ）
-            .kind(RouteType::Unspec) // RTN_UNSPEC（C言語と同じ）
-            .build();
-
-        let mut resp = self.execute_get_route_request(req_msg);
-        let resp_msg = resp
-            .try_next()
-            .await?
+            .await
+            .map_err(|e| {
+                let rtnetlink::Error::NetlinkError(err_msg) = e.clone() else {
+                    return NetlinkError::RTNetlinkError(e);
+                };
+                match err_msg.code.map(|c| c.get()) {
+                    Some(code) => match code {
+                        nix::libc::ENOENT => NetlinkError::NoRouteToHost,
+                        nix::libc::ENETUNREACH => NetlinkError::NoRouteToHost,
+                        nix::libc::EHOSTUNREACH => NetlinkError::NoRouteToHost,
+                        nix::libc::ENODEV => NetlinkError::NoSuchInterfaceIdx(0),
+                        _ => NetlinkError::RTNetlinkError(e),
+                    },
+                    _ => NetlinkError::RTNetlinkError(e),
+                }
+            })?
             .ok_or(NetlinkError::FailedToGetRouteMessage)?;
 
         self.parse_route_entry_from_route_msg(resp_msg).await
@@ -129,6 +127,21 @@ impl Netlink {
         };
 
         Ok(entry)
+    }
+
+    /// IPv6グローバルユニキャストアドレスが存在するかチェック
+    fn has_global_unicast_ipv6_address(&self) -> Result<bool, NetlinkError> {
+        let interfaces = self.get_interfaces()?;
+
+        for interface in interfaces {
+            if let Some(preferred_addr) = interface.get_preferred_ipv6_address() {
+                if preferred_addr.is_global_unicast() {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
     }
 
     async fn get_linktype_from_index(&self, index: u32) -> Result<LinkType, NetlinkError> {
@@ -255,5 +268,15 @@ mod tests {
         assert_eq!(req_msg.header.kind, RouteType::Unspec);
 
         Ok(())
+    }
+}
+
+impl NetworkInterface {
+    pub(super) fn get_ipv6_flags(&self, _addr: Ipv6Addr) -> Result<IPv6AddressFlags, NetlinkError> {
+        // TODO: netlink RTM_GETADDR実装
+        Ok(IPv6AddressFlags {
+            deprecated: false,
+            temporary: false,
+        })
     }
 }
