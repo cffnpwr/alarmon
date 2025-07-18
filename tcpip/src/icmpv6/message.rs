@@ -14,7 +14,8 @@ use std::net::Ipv6Addr;
 use bytes::{BufMut, Bytes, BytesMut};
 
 pub use self::destination_unreachable::{
-    DestinationUnreachableMessage, DestinationUnreachableMessageError,
+    DestinationUnreachableCode, DestinationUnreachableCodeError, DestinationUnreachableMessage,
+    DestinationUnreachableMessageError,
 };
 pub use self::echo::{EchoMessage, EchoMessageError};
 pub use self::neighbor_advertisement::{
