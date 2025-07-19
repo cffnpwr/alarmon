@@ -14,7 +14,8 @@ pub use self::message::{
     NeighborSolicitationMessageError, PacketTooBigMessage, PacketTooBigMessageError,
     ParameterProblemMessage, ParameterProblemMessageError, RedirectMessage, RedirectMessageError,
     RouterAdvertisementMessage, RouterAdvertisementMessageError, RouterSolicitationMessage,
-    RouterSolicitationMessageError, TimeExceededMessage, TimeExceededMessageError,
+    RouterSolicitationMessageError, TimeExceededCode, TimeExceededCodeError, TimeExceededMessage,
+    TimeExceededMessageError,
 };
 pub use self::message_type::{ICMPv6MessageType, ICMPv6MessageTypeError};
 use crate::TryFromBytes;

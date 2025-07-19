@@ -4,8 +4,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 use fxhash::FxHashMap;
 use log::{debug, info, warn};
-use tcpip::icmp::{ICMPError, ICMPMessage};
-use tcpip::icmpv6::{ICMPv6Error, ICMPv6Message};
+use tcpip::icmp::{ICMPError, ICMPMessage, RedirectCode, TimeExceededCode as TimeExceededCodeV4};
+use tcpip::icmpv6::{ICMPv6Error, ICMPv6Message, TimeExceededCode as TimeExceededCodeV6};
 use tcpip::ip_packet::IPPacket;
 use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
 use tcpip::ipv6::IPv6Packet;
@@ -15,7 +15,7 @@ use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
 use crate::net_utils::netlink::NetlinkError;
-use crate::tui::models::{PingUpdate, UpdateMessage};
+use crate::tui::models::{NetworkErrorType, PingUpdate, UpdateMessage};
 
 #[derive(Debug, Error)]
 pub enum PingWorkerError {
@@ -363,16 +363,22 @@ impl PingResponseReceiver {
                     .map_err(|_| PingWorkerError::ChannelSendError)?;
             }
             ICMPMessage::DestinationUnreachable(dest_msg) => {
-                self.handle_ipv4_error(&dest_msg.original_datagram).await;
+                self.handle_ipv4_destination_unreachable_error(
+                    &dest_msg.original_datagram,
+                    dest_msg.code,
+                )
+                .await;
             }
             ICMPMessage::TimeExceeded(time_msg) => {
-                self.handle_ipv4_error(&time_msg.original_datagram).await;
+                self.handle_ipv4_time_exceeded_error(&time_msg.original_datagram, time_msg.code)
+                    .await;
             }
             ICMPMessage::ParameterProblem(param_msg) => {
-                self.handle_ipv4_error(&param_msg.original_datagram).await;
+                self.handle_ipv4_parameter_problem_error(&param_msg.original_datagram)
+                    .await;
             }
             ICMPMessage::Redirect(redirect_msg) => {
-                self.handle_ipv4_error(&redirect_msg.original_datagram)
+                self.handle_ipv4_redirect_error(&redirect_msg.original_datagram, redirect_msg.code)
                     .await;
             }
             msg => {
@@ -450,16 +456,23 @@ impl PingResponseReceiver {
                     .map_err(|_| PingWorkerError::ChannelSendError)?;
             }
             ICMPv6Message::DestinationUnreachable(dest_msg) => {
-                self.handle_ipv6_error(&dest_msg.original_packet).await;
+                self.handle_ipv6_destination_unreachable_error(
+                    &dest_msg.original_packet,
+                    dest_msg.code,
+                )
+                .await;
             }
             ICMPv6Message::TimeExceeded(time_msg) => {
-                self.handle_ipv6_error(&time_msg.original_packet).await;
+                self.handle_ipv6_time_exceeded_error(&time_msg.original_packet, time_msg.code)
+                    .await;
             }
             ICMPv6Message::ParameterProblem(param_msg) => {
-                self.handle_ipv6_error(&param_msg.original_packet).await;
+                self.handle_ipv6_parameter_problem_error(&param_msg.original_packet)
+                    .await;
             }
             ICMPv6Message::PacketTooBig(ptb_msg) => {
-                self.handle_ipv6_error(&ptb_msg.original_packet).await;
+                self.handle_ipv6_packet_too_big_error(&ptb_msg.original_packet, ptb_msg.mtu)
+                    .await;
             }
             ICMPv6Message::Redirect(redirect_msg) => {
                 debug!(
@@ -507,8 +520,12 @@ impl PingResponseReceiver {
         }
     }
 
-    // 共通エラー処理ユーティリティメソッド
-    async fn handle_ipv4_error(&mut self, original_datagram: &IPv4Packet) {
+    // IPv4 ICMPエラー処理メソッド
+    async fn handle_ipv4_destination_unreachable_error(
+        &mut self,
+        original_datagram: &IPv4Packet,
+        code: tcpip::icmp::DestinationUnreachableCode,
+    ) {
         if let Some(pending_ping) = self
             .extract_pending_ping_from_ipv4_error(original_datagram)
             .unwrap_or_else(|e| {
@@ -516,13 +533,84 @@ impl PingResponseReceiver {
                 None
             })
         {
-            if let Err(e) = self.send_error_update(pending_ping).await {
+            let error_info = crate::tui::models::NetworkErrorType::DestinationUnreachable(code);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
                 warn!("Failed to send error update: {e}");
             }
         }
     }
 
-    async fn handle_ipv6_error(&mut self, original_packet: &IPv6Packet) {
+    async fn handle_ipv4_time_exceeded_error(
+        &mut self,
+        original_datagram: &IPv4Packet,
+        code: TimeExceededCodeV4,
+    ) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv4_error(original_datagram)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv4 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::TimeExceeded(code);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv4_parameter_problem_error(&mut self, original_datagram: &IPv4Packet) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv4_error(original_datagram)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv4 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::ParameterProblem;
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv4_redirect_error(
+        &mut self,
+        original_datagram: &IPv4Packet,
+        code: RedirectCode,
+    ) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv4_error(original_datagram)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv4 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::Redirect(code);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    // IPv6 ICMPエラー処理メソッド
+    async fn handle_ipv6_destination_unreachable_error(
+        &mut self,
+        original_packet: &IPv6Packet,
+        code: tcpip::icmpv6::DestinationUnreachableCode,
+    ) {
         if let Some(pending_ping) = self
             .extract_pending_ping_from_ipv6_error(original_packet)
             .unwrap_or_else(|e| {
@@ -530,7 +618,69 @@ impl PingResponseReceiver {
                 None
             })
         {
-            if let Err(e) = self.send_error_update(pending_ping).await {
+            let error_info = NetworkErrorType::DestinationUnreachableV6(code);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv6_time_exceeded_error(
+        &mut self,
+        original_packet: &IPv6Packet,
+        code: TimeExceededCodeV6,
+    ) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv6_error(original_packet)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv6 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::TimeExceededV6(code);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv6_parameter_problem_error(&mut self, original_packet: &IPv6Packet) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv6_error(original_packet)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv6 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::ParameterProblem;
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
+                warn!("Failed to send error update: {e}");
+            }
+        }
+    }
+
+    async fn handle_ipv6_packet_too_big_error(&mut self, original_packet: &IPv6Packet, mtu: u32) {
+        if let Some(pending_ping) = self
+            .extract_pending_ping_from_ipv6_error(original_packet)
+            .unwrap_or_else(|e| {
+                warn!("Failed to extract pending ping from IPv6 error: {e}");
+                None
+            })
+        {
+            let error_info = NetworkErrorType::PacketTooBig(mtu);
+            if let Err(e) = self
+                .send_error_update_with_info(pending_ping, error_info)
+                .await
+            {
                 warn!("Failed to send error update: {e}");
             }
         }
@@ -574,13 +724,17 @@ impl PingResponseReceiver {
         Ok(self.pending_pings.remove(&echo_msg.sequence_number))
     }
 
-    async fn send_error_update(&self, pending_ping: PendingPing) -> Result<(), PingWorkerError> {
+    async fn send_error_update_with_info(
+        &self,
+        pending_ping: PendingPing,
+        error_info: crate::tui::models::NetworkErrorType,
+    ) -> Result<(), PingWorkerError> {
         let ping_update = PingUpdate {
             id: self.identifier,
             host: pending_ping.target_ip,
             success: false,
             latency: None,
-            error: None,
+            error: Some(error_info),
         };
 
         if let Err(e) = self.update_tx.send(UpdateMessage::Ping(ping_update)).await {
@@ -594,8 +748,14 @@ impl PingResponseReceiver {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+    use std::time::Duration as StdDuration;
 
+    use bytes::Bytes;
+    use chrono::Duration;
+    use tcpip::icmp::{DestinationUnreachableCode, ICMPMessage, TimeExceededCode};
+    use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
     use tokio::sync::mpsc;
+    use tokio::time::timeout;
     use tokio_test::assert_ok;
     use tokio_util::sync::CancellationToken;
 
@@ -898,10 +1058,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_worker_run() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] PingWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
@@ -925,20 +1081,16 @@ mod tests {
 
         // ワーカーを短時間実行してからキャンセル
         let run_handle = tokio::spawn(ping_worker.run());
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
         token.cancel();
 
-        let result = timeout(Duration::from_millis(100), run_handle).await;
+        let result = timeout(StdDuration::from_millis(100), run_handle).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_ok());
     }
 
     #[tokio::test]
     async fn test_ping_request_sender_run_send_echo_req() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] Echo Request送信ループのテスト
         let identifier = 12345;
         let sequence_counter = 0;
@@ -962,16 +1114,16 @@ mod tests {
         let send_handle = tokio::spawn(sender.run_send_echo_req());
 
         // 最初のパケットを受信
-        let first_packet = timeout(Duration::from_millis(100), rx.recv()).await;
+        let first_packet = timeout(StdDuration::from_millis(100), rx.recv()).await;
         assert!(first_packet.is_ok());
         assert!(first_packet.unwrap().is_some());
 
-        let first_ping = timeout(Duration::from_millis(100), ping_rx.recv()).await;
+        let first_ping = timeout(StdDuration::from_millis(100), ping_rx.recv()).await;
         assert!(first_ping.is_ok());
         assert!(first_ping.unwrap().is_some());
 
         // 2番目のパケットを受信
-        let second_packet = timeout(Duration::from_millis(100), rx.recv()).await;
+        let second_packet = timeout(StdDuration::from_millis(100), rx.recv()).await;
         assert!(second_packet.is_ok());
         assert!(second_packet.unwrap().is_some());
 
@@ -981,10 +1133,6 @@ mod tests {
     #[tokio::test]
     #[ignore] // Temporarily ignore this flaky test
     async fn test_ping_response_receiver_listen_recv_ip_packets() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] select!ループでの受信処理テスト
         let identifier = 12345;
         let interval = chrono::Duration::seconds(1);
@@ -1046,7 +1194,7 @@ mod tests {
 
         // 短時間で終了することを期待
         let result = timeout(
-            Duration::from_millis(200),
+            StdDuration::from_millis(200),
             receiver.listen_recv_ip_packets(),
         )
         .await;
@@ -1112,5 +1260,167 @@ mod tests {
         // [正常系] エラーの表示確認
         let error1 = PingWorkerError::ChannelSendError;
         assert_eq!(error1.to_string(), "Channel send error");
+    }
+
+    #[tokio::test]
+    async fn test_ping_worker_icmp_error_handling() {
+        // [正常系] PingWorkerでのICMPエラーメッセージ処理テスト
+        let identifier = 12345;
+        let interval = chrono::Duration::seconds(1);
+        let timeout = chrono::Duration::seconds(5);
+        let mut pending_pings = FxHashMap::default();
+        let (_tx, rx) = broadcast::channel(100);
+        #[cfg(target_os = "linux")]
+        let (tx, _rx2) = mpsc::channel(100);
+        let (_ping_tx, ping_rx) = mpsc::channel(100);
+        let (update_tx, mut update_rx) = mpsc::channel(100);
+
+        #[cfg(target_os = "linux")]
+        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+
+        // pending_pingsに送信済みpingを登録（正しい型を使用）
+        let sequence_number = 1;
+        let pending_ping = PendingPing {
+            target_ip: target,
+            sequence_number,
+            sent_at: chrono::Utc::now(),
+        };
+        pending_pings.insert(sequence_number, pending_ping);
+
+        let mut receiver = PingResponseReceiver {
+            identifier,
+            interval,
+            timeout,
+            pending_pings,
+            rx,
+            #[cfg(target_os = "linux")]
+            tx,
+            ping_rx,
+            update_tx,
+            #[cfg(target_os = "linux")]
+            src,
+        };
+
+        // テスト1: IPv4 Destination Unreachable
+        let echo_request =
+            ICMPMessage::echo_request(identifier, sequence_number, Bytes::from("test"));
+        let original_packet = IPv4Packet::new(
+            TypeOfService::default(),
+            0,
+            Flags::default(),
+            0,
+            64,
+            Protocol::ICMP,
+            Ipv4Addr::new(192, 168, 1, 100),
+            Ipv4Addr::new(8, 8, 8, 8),
+            vec![],
+            Vec::<u8>::from(echo_request),
+        );
+        let dest_unreachable = ICMPMessage::destination_unreachable(
+            DestinationUnreachableCode::HostUnreachable,
+            None,
+            original_packet.clone(),
+        )
+        .unwrap();
+
+        let response_packet = IPv4Packet::new(
+            TypeOfService::default(),
+            0,
+            Flags::default(),
+            0,
+            64,
+            Protocol::ICMP,
+            Ipv4Addr::new(8, 8, 8, 8),
+            Ipv4Addr::new(192, 168, 1, 100),
+            vec![],
+            Vec::<u8>::from(dest_unreachable),
+        );
+
+        let ip_packet = IPPacket::V4(response_packet);
+        let result = receiver
+            .handle_recv_ip_packet(ip_packet, chrono::Utc::now())
+            .await;
+        assert!(result.is_ok());
+
+        // PingUpdateでエラー情報が正しく設定されることを確認
+        let update = update_rx.try_recv().unwrap();
+        if let UpdateMessage::Ping(ping_update) = update {
+            assert_eq!(ping_update.id, identifier);
+            assert!(!ping_update.success);
+            assert_eq!(ping_update.host, target);
+            assert!(ping_update.error.is_some());
+            if let Some(NetworkErrorType::DestinationUnreachable(code)) = ping_update.error {
+                assert_eq!(code, DestinationUnreachableCode::HostUnreachable);
+            } else {
+                panic!("Expected DestinationUnreachable error");
+            }
+        } else {
+            panic!("Expected Ping update");
+        }
+
+        // テスト2: IPv4 Time Exceeded
+        let sequence_number2 = 2;
+        let pending_ping2 = PendingPing {
+            target_ip: target,
+            sequence_number: sequence_number2,
+            sent_at: chrono::Utc::now(),
+        };
+        receiver
+            .pending_pings
+            .insert(sequence_number2, pending_ping2);
+
+        let echo_request2 =
+            ICMPMessage::echo_request(identifier, sequence_number2, Bytes::from("test"));
+        let original_packet2 = IPv4Packet::new(
+            TypeOfService::default(),
+            0,
+            Flags::default(),
+            0,
+            64,
+            Protocol::ICMP,
+            Ipv4Addr::new(192, 168, 1, 100),
+            Ipv4Addr::new(8, 8, 8, 8),
+            vec![],
+            Vec::<u8>::from(echo_request2),
+        );
+        let time_exceeded =
+            ICMPMessage::time_exceeded(TimeExceededCode::TtlExceeded, original_packet2.clone())
+                .unwrap();
+
+        let response_packet2 = IPv4Packet::new(
+            TypeOfService::default(),
+            0,
+            Flags::default(),
+            0,
+            64,
+            Protocol::ICMP,
+            Ipv4Addr::new(8, 8, 8, 8),
+            Ipv4Addr::new(192, 168, 1, 100),
+            vec![],
+            Vec::<u8>::from(time_exceeded),
+        );
+
+        let ip_packet2 = IPPacket::V4(response_packet2);
+        let result2 = receiver
+            .handle_recv_ip_packet(ip_packet2, chrono::Utc::now())
+            .await;
+        assert!(result2.is_ok());
+
+        // PingUpdateでTimeExceededエラー情報が正しく設定されることを確認
+        let update2 = update_rx.try_recv().unwrap();
+        if let UpdateMessage::Ping(ping_update2) = update2 {
+            assert_eq!(ping_update2.id, identifier);
+            assert!(!ping_update2.success);
+            assert_eq!(ping_update2.host, target);
+            assert!(ping_update2.error.is_some());
+            if let Some(NetworkErrorType::TimeExceeded(code)) = ping_update2.error {
+                assert_eq!(code, TimeExceededCode::TtlExceeded);
+            } else {
+                panic!("Expected TimeExceeded error");
+            }
+        } else {
+            panic!("Expected Ping update");
+        }
     }
 }

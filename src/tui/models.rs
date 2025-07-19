@@ -5,8 +5,14 @@ use chrono::Duration;
 use crossterm::event;
 use fxhash::FxHashMap;
 use ratatui::widgets::TableState;
-use tcpip::icmp::{DestinationUnreachableCode, RedirectCode};
-use tcpip::icmpv6::DestinationUnreachableCode as ICMPv6DestinationUnreachableCode;
+use tcpip::icmp::{
+    DestinationUnreachableCode as DestinationUnreachableCodeV4, RedirectCode,
+    TimeExceededCode as TimeExceededCodeV4,
+};
+use tcpip::icmpv6::{
+    DestinationUnreachableCode as DestinationUnreachableCodeV6,
+    TimeExceededCode as TimeExceededCodeV6,
+};
 
 use crate::config::{Config, Target, TargetHost};
 
@@ -46,8 +52,10 @@ pub struct TracerouteUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkErrorType {
     // ICMPエラー
-    DestinationUnreachable(DestinationUnreachableCode),
-    DestinationUnreachableV6(ICMPv6DestinationUnreachableCode),
+    DestinationUnreachable(DestinationUnreachableCodeV4),
+    DestinationUnreachableV6(DestinationUnreachableCodeV6),
+    TimeExceeded(TimeExceededCodeV4),
+    TimeExceededV6(TimeExceededCodeV6),
     ParameterProblem,
     Redirect(RedirectCode),
     PacketTooBig(u32),
@@ -57,22 +65,24 @@ impl NetworkErrorType {
     pub fn icon(&self) -> &'static str {
         match self {
             NetworkErrorType::DestinationUnreachable(code) => match code {
-                DestinationUnreachableCode::NetworkUnreachable => "🌐",
-                DestinationUnreachableCode::HostUnreachable => "🔌",
-                DestinationUnreachableCode::ProtocolUnreachable => "🔧",
-                DestinationUnreachableCode::PortUnreachable => "🚪",
-                DestinationUnreachableCode::FragmentationNeededAndDFSet => "🔗",
-                DestinationUnreachableCode::SourceRouteFailed => "🛤️",
+                DestinationUnreachableCodeV4::NetworkUnreachable => "🌐",
+                DestinationUnreachableCodeV4::HostUnreachable => "🔌",
+                DestinationUnreachableCodeV4::ProtocolUnreachable => "🔧",
+                DestinationUnreachableCodeV4::PortUnreachable => "🚪",
+                DestinationUnreachableCodeV4::FragmentationNeededAndDFSet => "🔗",
+                DestinationUnreachableCodeV4::SourceRouteFailed => "🛤️",
             },
             NetworkErrorType::DestinationUnreachableV6(code) => match code {
-                ICMPv6DestinationUnreachableCode::NoRouteToDestination => "🌐",
-                ICMPv6DestinationUnreachableCode::CommunicationProhibited => "🚫",
-                ICMPv6DestinationUnreachableCode::BeyondScopeOfSourceAddress => "🔍",
-                ICMPv6DestinationUnreachableCode::AddressUnreachable => "🔌",
-                ICMPv6DestinationUnreachableCode::PortUnreachable => "🚪",
-                ICMPv6DestinationUnreachableCode::SourceAddressPolicyViolation => "🚧",
-                ICMPv6DestinationUnreachableCode::RejectRouteToDestination => "❌",
+                DestinationUnreachableCodeV6::NoRouteToDestination => "🌐",
+                DestinationUnreachableCodeV6::CommunicationProhibited => "🚫",
+                DestinationUnreachableCodeV6::BeyondScopeOfSourceAddress => "🔍",
+                DestinationUnreachableCodeV6::AddressUnreachable => "🔌",
+                DestinationUnreachableCodeV6::PortUnreachable => "🚪",
+                DestinationUnreachableCodeV6::SourceAddressPolicyViolation => "🚧",
+                DestinationUnreachableCodeV6::RejectRouteToDestination => "❌",
             },
+            NetworkErrorType::TimeExceeded(_) => "⏱️",
+            NetworkErrorType::TimeExceededV6(_) => "⏱️",
             NetworkErrorType::ParameterProblem => "❓",
             NetworkErrorType::Redirect(_) => "↩",
             NetworkErrorType::PacketTooBig(_) => "📦",
@@ -86,6 +96,7 @@ pub struct TracerouteHop {
     pub success: bool,
     pub address: Option<IpAddr>,
     pub latency: Option<Duration>,
+    pub error: Option<NetworkErrorType>,
 }
 
 /// Traceroute履歴管理用の内部構造体
@@ -95,6 +106,7 @@ pub struct TracerouteHopHistory {
     pub success: bool,
     pub address: Option<IpAddr>,
     pub latency: Option<Duration>,
+    pub error: Option<NetworkErrorType>,
     /// レスポンス時間の履歴（sparkline用）
     pub latency_history: Vec<f64>,
 }
@@ -265,6 +277,7 @@ impl AppState {
                         // 新しい情報で既存hopを更新
                         existing_hop.success = new_hop.success;
                         existing_hop.latency = new_hop.latency;
+                        existing_hop.error = new_hop.error.clone();
                         // addressが新しく取得できた場合は更新
                         if new_hop.address.is_some() {
                             existing_hop.address = new_hop.address;
@@ -297,6 +310,7 @@ impl AppState {
                             success: new_hop.success,
                             address: new_hop.address,
                             latency: new_hop.latency,
+                            error: new_hop.error,
                             latency_history,
                         };
                         existing_hops.push(hop_history);
@@ -319,6 +333,7 @@ impl AppState {
                         success: hop.success,
                         address: hop.address,
                         latency: hop.latency,
+                        error: hop.error,
                         latency_history,
                     };
                     initial_hops.push(hop_history);
@@ -364,17 +379,18 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+    use std::str::FromStr;
+    use std::time::Instant;
+
+    use chrono::Duration;
+    use tcpip::icmp::TimeExceededCode;
+
     use super::*;
-    use crate::config::Target;
+    use crate::config::{Config, Target};
 
     #[test]
     fn test_get_ping_results_sorted_preserves_order() {
-        use std::time::Instant;
-
-        use chrono::Duration;
-
-        use crate::config::Config;
-
         // [正常系] 設定ファイルの順序が保持されることを確認
         let config = Config {
             targets: vec![
@@ -462,5 +478,57 @@ mod tests {
         assert_eq!(results[0].response_time.unwrap().num_milliseconds(), 20);
         assert_eq!(results[1].response_time.unwrap().num_milliseconds(), 5);
         assert_eq!(results[2].response_time.unwrap().num_milliseconds(), 10);
+    }
+
+    #[test]
+    fn test_update_traceroute_result_with_error_info() {
+        // [正常系] Tracerouteの結果更新時にエラー情報が正しく処理されることを確認
+        let config = Config {
+            targets: vec![Target {
+                id: 1,
+                name: "Test Host".to_string(),
+                host: TargetHost::Domain("example.com".to_string()),
+            }],
+            ..Config::default()
+        };
+
+        let mut app_state = AppState::new(&config);
+
+        // エラー情報を含むTracerouteUpdateを作成
+        // TracerouteのIDはping_target.id + total_target_countで計算されるため、1 + 1 = 2を使用
+        let traceroute_update = TracerouteUpdate {
+            id: 2,
+            hops: vec![TracerouteHop {
+                hop_number: 1,
+                success: false,
+                address: Some(IpAddr::from_str("192.168.1.1").unwrap()),
+                latency: None,
+                error: Some(NetworkErrorType::TimeExceeded(
+                    TimeExceededCode::TtlExceeded,
+                )),
+            }],
+        };
+
+        // 結果を更新
+        app_state.update_traceroute_result(traceroute_update);
+
+        // 結果を取得
+        let hops = app_state.get_traceroute_hops(&TargetHost::Domain("example.com".to_string()));
+
+        // エラー情報が正しく保存されていることを確認
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].hop_number, 1);
+        assert!(!hops[0].success);
+        assert_eq!(
+            hops[0].address,
+            Some(IpAddr::from_str("192.168.1.1").unwrap())
+        );
+        assert_eq!(hops[0].latency, None);
+        assert_eq!(
+            hops[0].error,
+            Some(NetworkErrorType::TimeExceeded(
+                TimeExceededCode::TtlExceeded
+            ))
+        );
     }
 }

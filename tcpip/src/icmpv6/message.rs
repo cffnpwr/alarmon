@@ -29,7 +29,9 @@ pub use self::parameter_problem::{ParameterProblemMessage, ParameterProblemMessa
 pub use self::redirect::{RedirectMessage, RedirectMessageError};
 pub use self::router_advertisement::{RouterAdvertisementMessage, RouterAdvertisementMessageError};
 pub use self::router_solicitation::{RouterSolicitationMessage, RouterSolicitationMessageError};
-pub use self::time_exceeded::{TimeExceededMessage, TimeExceededMessageError};
+pub use self::time_exceeded::{
+    TimeExceededCode, TimeExceededCodeError, TimeExceededMessage, TimeExceededMessageError,
+};
 use crate::checksum::calculate_internet_checksum;
 use crate::icmpv6::ICMPv6MessageType;
 
