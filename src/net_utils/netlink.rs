@@ -3,7 +3,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use tcpip::ethernet::MacAddr;
 use tcpip::ip_cidr::IPCIDR;
-use tcpip::ipv6::ipv6_address::IPv6AddrExt;
 
 pub use self::common::NetlinkError;
 #[cfg(target_os = "linux")]
@@ -96,15 +95,11 @@ impl NetworkInterface {
             .filter_map(|cidr| {
                 if let IPCIDR::V6(ipv6_cidr) = cidr {
                     let addr = ipv6_cidr.address;
-                    if addr.is_global_unicast() {
-                        let flags = self.get_ipv6_flags(addr).ok()?;
-                        Some(IPv6AddressInfo {
-                            address: addr,
-                            flags,
-                        })
-                    } else {
-                        None
-                    }
+                    let flags = self.get_ipv6_flags(addr).ok()?;
+                    Some(IPv6AddressInfo {
+                        address: addr,
+                        flags,
+                    })
                 } else {
                     None
                 }

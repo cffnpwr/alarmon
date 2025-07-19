@@ -18,7 +18,7 @@ const RTM_MSGHDR_LEN: usize = mem::size_of::<rt_msghdr>();
 const ATTR_LEN: usize = 128;
 
 // IPv6フラグ関連の定数
-const SIOCGIFAFLAG_IN6: c_ulong = 0xc0206949;
+const SIOCGIFAFLAG_IN6: c_ulong = 0xc1206949;
 const IN6_IFF_DEPRECATED: u32 = 0x0010;
 const IN6_IFF_TEMPORARY: u32 = 0x0080;
 
@@ -42,10 +42,27 @@ struct rt_msg {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
+#[derive(Clone, Copy)]
+union ifr_ifru {
+    ifru_addr: sockaddr_in6,
+    ifru_flags6: u32,
+}
+
+impl std::fmt::Debug for ifr_ifru {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ifr_ifru")
+            .field("ifru_addr", unsafe { &self.ifru_addr })
+            .field("ifru_flags6", unsafe { &self.ifru_flags6 })
+            .finish()
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 struct in6_ifreq {
     ifr_name: [i8; 16],
-    ifr_addr: sockaddr_in6,
-    ifr_flags: u32,
+    ifr_ifru: ifr_ifru,
 }
 
 impl NetworkInterface {
@@ -57,17 +74,7 @@ impl NetworkInterface {
 
         let mut ifreq = in6_ifreq {
             ifr_name: [0; 16],
-            ifr_addr: sockaddr_in6 {
-                sin6_len: mem::size_of::<sockaddr_in6>() as u8,
-                sin6_family: AF_INET6 as u8,
-                sin6_port: 0,
-                sin6_flowinfo: 0,
-                sin6_addr: in6_addr {
-                    s6_addr: addr.octets(),
-                },
-                sin6_scope_id: 0,
-            },
-            ifr_flags: 0,
+            ifr_ifru: ifr_ifru { ifru_flags6: 0 },
         };
 
         // インターフェース名設定
@@ -76,18 +83,32 @@ impl NetworkInterface {
         for (i, &b) in name_bytes[..copy_len].iter().enumerate() {
             ifreq.ifr_name[i] = b as i8;
         }
+        ifreq.ifr_name[copy_len] = 0;
 
-        let result = unsafe { ioctl(sock_fd, SIOCGIFAFLAG_IN6, &mut ifreq) };
+        // IPv6アドレスをsockaddr_in6構造体に設定
+        let octets = addr.octets();
+        let sa_in6 = sockaddr_in6 {
+            sin6_len: mem::size_of::<sockaddr_in6>() as u8,
+            sin6_family: AF_INET6 as u8,
+            sin6_port: 0,
+            sin6_flowinfo: 0,
+            sin6_addr: in6_addr { s6_addr: octets },
+            sin6_scope_id: 0,
+        };
+        ifreq.ifr_ifru.ifru_addr = sa_in6;
+
+        let ioctl_result = unsafe { ioctl(sock_fd, SIOCGIFAFLAG_IN6, &mut ifreq) };
         unsafe { close(sock_fd) };
 
-        if result < 0 {
-            return Err(NetlinkError::FailedToGetIfAddrs(nix::Error::last()));
+        if ioctl_result < 0 {
+            Err(NetlinkError::FailedToGetIfAddrs(nix::Error::last()))
+        } else {
+            let flags = IPv6AddressFlags {
+                deprecated: unsafe { (ifreq.ifr_ifru.ifru_flags6 & IN6_IFF_DEPRECATED) != 0 },
+                temporary: unsafe { (ifreq.ifr_ifru.ifru_flags6 & IN6_IFF_TEMPORARY) != 0 },
+            };
+            Ok(flags)
         }
-
-        Ok(IPv6AddressFlags {
-            deprecated: (ifreq.ifr_flags & IN6_IFF_DEPRECATED) != 0,
-            temporary: (ifreq.ifr_flags & IN6_IFF_TEMPORARY) != 0,
-        })
     }
 }
 
@@ -344,6 +365,7 @@ impl Netlink {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use tcpip::ethernet::MacAddr;
 
     use super::*;
 
@@ -542,6 +564,53 @@ mod tests {
         let route_entry2 = result2.unwrap();
         assert_eq!(route_entry2.to, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)));
         assert!(route_entry2.via.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_ipv6_flags() -> Result<(), Box<dyn std::error::Error>> {
+        // [正常系] LoopbackアドレスでIPv6フラグ取得のテスト
+        let interface = NetworkInterface {
+            index: 1,
+            name: "lo0".to_string(),
+            mac_addr: MacAddr::from([0, 0, 0, 0, 0, 0]),
+            ip_addrs: vec![],
+            linktype: LinkType::Loopback,
+        };
+
+        let loopback_addr = Ipv6Addr::LOCALHOST;
+        let result = interface.get_ipv6_flags(loopback_addr);
+
+        match result {
+            Ok(flags) => {
+                // 成功時はLoopbackアドレスがPermanentであることを確認
+                assert!(
+                    !flags.deprecated,
+                    "Loopback address should not be deprecated"
+                );
+                assert!(!flags.temporary, "Loopback address should not be temporary");
+            }
+            Err(e) => {
+                // エラーが発生した場合でもテストを続行し、具体的なエラーを確認
+                panic!("IPv6フラグ取得に失敗: {e:?}");
+            }
+        }
+
+        // [異常系] 存在しないインターフェース名でのテスト
+        let invalid_interface = NetworkInterface {
+            index: 999,
+            name: "nonexistent".to_string(),
+            mac_addr: MacAddr::from([0, 0, 0, 0, 0, 0]),
+            ip_addrs: vec![],
+            linktype: LinkType::Ethernet,
+        };
+
+        let result = invalid_interface.get_ipv6_flags(loopback_addr);
+        assert!(
+            result.is_err(),
+            "Non-existent interface should return error"
+        );
 
         Ok(())
     }
