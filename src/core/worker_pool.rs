@@ -167,11 +167,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use tcpip::ethernet::MacAddr;
+    use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::config::{ArpConfig, Config, TracerouteConfig};
+    use crate::core::pcap_worker::PingTarget;
     use crate::net_utils::arp_table::ArpTable;
     use crate::net_utils::netlink::{LinkType, NetworkInterface};
 
@@ -187,9 +190,6 @@ mod tests {
     }
 
     fn create_test_network_interface() -> NetworkInterface {
-        use tcpip::ethernet::MacAddr;
-        use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
-
         let mac_addr = MacAddr::try_from("00:11:22:33:44:55").unwrap();
         let ipv4_cidr =
             IPv4CIDR::new_with_prefix_length(Ipv4Addr::new(192, 168, 1, 100), &24).unwrap();
@@ -247,11 +247,11 @@ mod tests {
         let ping_targets = PingTargets {
             ni: ni.clone(),
             targets: vec![
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 1,
                     host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 },
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 2,
                     host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
                 },
@@ -294,7 +294,6 @@ mod tests {
         let mut targets = FxHashMap::default();
 
         // IPアドレスのないネットワークインターフェースを作成
-        use tcpip::ethernet::MacAddr;
         let mac_addr = MacAddr::try_from("00:11:22:33:44:55").unwrap();
         let ni_no_ip = NetworkInterface {
             index: 1,
@@ -306,7 +305,7 @@ mod tests {
 
         let ping_targets = PingTargets {
             ni: ni_no_ip,
-            targets: vec![crate::core::pcap_worker::PingTarget {
+            targets: vec![PingTarget {
                 id: 1,
                 host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
             }],
@@ -369,7 +368,7 @@ mod tests {
         let ni1 = create_test_network_interface();
         let ping_targets1 = PingTargets {
             ni: ni1.clone(),
-            targets: vec![crate::core::pcap_worker::PingTarget {
+            targets: vec![PingTarget {
                 id: 1,
                 host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
             }],
@@ -377,8 +376,6 @@ mod tests {
         targets.insert(ni1.index, ping_targets1);
 
         // 2つ目のインターフェース
-        use tcpip::ethernet::MacAddr;
-        use tcpip::ip_cidr::{IPCIDR, IPv4CIDR};
         let mac_addr2 = MacAddr::try_from("00:11:22:33:44:66").unwrap();
         let ipv4_cidr2 =
             IPv4CIDR::new_with_prefix_length(Ipv4Addr::new(10, 0, 0, 100), &24).unwrap();
@@ -392,11 +389,11 @@ mod tests {
         let ping_targets2 = PingTargets {
             ni: ni2.clone(),
             targets: vec![
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 2,
                     host: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                 },
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 3,
                     host: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                 },
@@ -440,15 +437,15 @@ mod tests {
         let ping_targets = PingTargets {
             ni: ni.clone(),
             targets: vec![
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 1,
                     host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 },
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 2,
                     host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
                 },
-                crate::core::pcap_worker::PingTarget {
+                PingTarget {
                     id: 3,
                     host: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)),
                 },

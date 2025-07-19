@@ -616,6 +616,7 @@ impl TracerouteWorker {
                 success: hop.ip_address.is_some(),
                 address: hop.ip_address,
                 latency: hop.rtt,
+                error: None,
             })
             .collect();
 
@@ -637,8 +638,13 @@ impl TracerouteWorker {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+    use std::time::Duration as StdDuration;
 
+    use bytes::Bytes;
+    use tcpip::icmp::{DestinationUnreachableCode, ICMPMessage, TimeExceededCode};
+    use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
     use tokio::sync::{broadcast, mpsc};
+    use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -685,10 +691,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_traceroute_worker_run() {
-        use std::time::Duration;
-
-        use tokio::time::timeout;
-
         // [正常系] TracerouteWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
@@ -713,20 +715,16 @@ mod tests {
 
         // ワーカーを短時間実行してからキャンセル
         let run_handle = tokio::spawn(traceroute_worker.run());
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(StdDuration::from_millis(10)).await;
         token.cancel();
 
-        let result = timeout(Duration::from_millis(500), run_handle).await;
+        let result = timeout(StdDuration::from_millis(500), run_handle).await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_ok());
     }
 
     #[tokio::test]
     async fn test_process_received_packet() {
-        use bytes::Bytes;
-        use tcpip::icmp::{DestinationUnreachableCode, ICMPMessage, TimeExceededCode};
-        use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
-
         let token = CancellationToken::new();
         let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
