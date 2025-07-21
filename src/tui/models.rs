@@ -16,8 +16,8 @@ use tcpip::icmpv6::{
 
 use crate::config::{Config, Target, TargetHost};
 
-// タイムアウトを表すマーカー値
-pub const TIMEOUT_MARKER: f64 = -1.0;
+// ネットワークエラーを表すマーカー値
+pub const ERROR_MARKER: f64 = -1.0;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -66,29 +66,29 @@ impl NetworkErrorType {
     pub fn icon(&self) -> &'static str {
         match self {
             NetworkErrorType::DestinationUnreachable(code) => match code {
-                DestinationUnreachableCodeV4::NetworkUnreachable => "🌐",
-                DestinationUnreachableCodeV4::HostUnreachable => "🔌",
-                DestinationUnreachableCodeV4::ProtocolUnreachable => "🔧",
-                DestinationUnreachableCodeV4::PortUnreachable => "🚪",
-                DestinationUnreachableCodeV4::FragmentationNeededAndDFSet => "🔗",
-                DestinationUnreachableCodeV4::SourceRouteFailed => "🛤️",
+                DestinationUnreachableCodeV4::NetworkUnreachable => "\u{f0319}",
+                DestinationUnreachableCodeV4::HostUnreachable => "\u{f0319}",
+                DestinationUnreachableCodeV4::ProtocolUnreachable => "\u{f071e}",
+                DestinationUnreachableCodeV4::PortUnreachable => "\u{f0675}",
+                DestinationUnreachableCodeV4::FragmentationNeededAndDFSet => "\u{f0721}",
+                DestinationUnreachableCodeV4::SourceRouteFailed => "\u{f071f}",
             },
             NetworkErrorType::DestinationUnreachableV6(code) => match code {
-                DestinationUnreachableCodeV6::NoRouteToDestination => "🌐",
-                DestinationUnreachableCodeV6::CommunicationProhibited => "🚫",
-                DestinationUnreachableCodeV6::BeyondScopeOfSourceAddress => "🔍",
-                DestinationUnreachableCodeV6::AddressUnreachable => "🔌",
-                DestinationUnreachableCodeV6::PortUnreachable => "🚪",
-                DestinationUnreachableCodeV6::SourceAddressPolicyViolation => "🚧",
-                DestinationUnreachableCodeV6::RejectRouteToDestination => "❌",
+                DestinationUnreachableCodeV6::NoRouteToDestination => "\u{f0202}",
+                DestinationUnreachableCodeV6::CommunicationProhibited => "\u{f0653}",
+                DestinationUnreachableCodeV6::BeyondScopeOfSourceAddress => "\u{f071f}",
+                DestinationUnreachableCodeV6::AddressUnreachable => "\u{f0319}",
+                DestinationUnreachableCodeV6::PortUnreachable => "\u{f0675}",
+                DestinationUnreachableCodeV6::SourceAddressPolicyViolation => "\u{f0653}",
+                DestinationUnreachableCodeV6::RejectRouteToDestination => "\u{f0653}",
             },
-            NetworkErrorType::TimeExceeded(_) => "⏱️",
-            NetworkErrorType::TimeExceededV6(_) => "⏱️",
-            NetworkErrorType::ParameterProblem => "❓",
-            NetworkErrorType::Redirect(_) => "↩",
-            NetworkErrorType::PacketTooBig(_) => "📦",
-            NetworkErrorType::Timeout => "⏳",
-            NetworkErrorType::NoRouteToHost => "🗺️",
+            NetworkErrorType::TimeExceeded(_) => "\u{f0953}",
+            NetworkErrorType::TimeExceededV6(_) => "\u{f0953}",
+            NetworkErrorType::ParameterProblem => "\u{f071e}",
+            NetworkErrorType::Redirect(_) => "\u{f0720}",
+            NetworkErrorType::PacketTooBig(_) => "\u{f0721}",
+            NetworkErrorType::Timeout => "\u{f199f}",
+            NetworkErrorType::NoRouteToHost => "\u{f0202}",
         }
     }
 }
@@ -131,7 +131,6 @@ pub struct PingResult {
 #[derive(Debug, Clone)]
 pub enum PingStatus {
     Success,
-    Timeout,
     NetworkError(NetworkErrorType),
 }
 
@@ -186,12 +185,20 @@ impl AppState {
     }
 
     pub fn update_ping_result(&mut self, update: PingUpdate) {
-        // idに基づいてターゲットを見つける
-        let target_key = self
-            .target_configs
-            .iter()
-            .find(|config_target| config_target.id == update.id)
-            .map(|config_target| config_target.host.clone());
+        // idに基づいてターゲットを見つける（id=0の場合はhostで特定）
+        let target_key = if update.id == 0 {
+            // RoutingWorkerからのエラーの場合、hostアドレスでターゲットを特定
+            self.target_configs
+                .iter()
+                .find(|config_target| config_target.host.to_string() == update.host.to_string())
+                .map(|config_target| config_target.host.clone())
+        } else {
+            // 通常のPingWorkerからの更新の場合、idで特定
+            self.target_configs
+                .iter()
+                .find(|config_target| config_target.id == update.id)
+                .map(|config_target| config_target.host.clone())
+        };
 
         if let Some(target) = target_key {
             if let Some(result) = self.ping_results.get_mut(&target) {
@@ -217,7 +224,7 @@ impl AppState {
                         let valid_values: Vec<f64> = result
                             .latency_history
                             .iter()
-                            .filter(|&&v| v != TIMEOUT_MARKER)
+                            .filter(|&&v| v != ERROR_MARKER)
                             .cloned()
                             .collect();
                         let avg = if valid_values.is_empty() {
@@ -230,22 +237,13 @@ impl AppState {
                     Err(error) => {
                         // エラー時の処理
                         result.response_time = None;
-                        // タイムアウト時は履歴にマーカーを追加
-                        result.latency_history.push(TIMEOUT_MARKER);
+                        // ネットワークエラー時は履歴にエラーマーカーを追加
+                        result.latency_history.push(ERROR_MARKER);
 
                         if result.latency_history.len() > 50 {
                             result.latency_history.remove(0);
                         }
-
-                        // エラー種別に応じてステータスを設定
-                        match error {
-                            NetworkErrorType::Timeout => {
-                                result.status = PingStatus::Timeout;
-                            }
-                            _ => {
-                                result.status = PingStatus::NetworkError(error);
-                            }
-                        }
+                        result.status = PingStatus::NetworkError(error);
                     }
                 }
 
@@ -298,8 +296,8 @@ impl AppState {
                                 .latency_history
                                 .push(latency.num_milliseconds() as f64);
                         } else {
-                            // タイムアウトの場合はマーカーを追加
-                            existing_hop.latency_history.push(TIMEOUT_MARKER);
+                            // エラーの場合はマーカーを追加
+                            existing_hop.latency_history.push(ERROR_MARKER);
                         }
 
                         // 履歴が50を超えたら古いデータを削除
@@ -311,7 +309,7 @@ impl AppState {
                         let latency_history = if let Some(latency) = new_hop.latency {
                             vec![latency.num_milliseconds() as f64]
                         } else {
-                            vec![TIMEOUT_MARKER]
+                            vec![ERROR_MARKER]
                         };
 
                         let hop_history = TracerouteHopHistory {
@@ -334,7 +332,7 @@ impl AppState {
                     let latency_history = if let Some(latency) = hop.latency {
                         vec![latency.num_milliseconds() as f64]
                     } else {
-                        vec![TIMEOUT_MARKER]
+                        vec![ERROR_MARKER]
                     };
 
                     let hop_history = TracerouteHopHistory {

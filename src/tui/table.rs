@@ -2,7 +2,12 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row};
 
-use crate::tui::models::{PingResult, PingStatus, TIMEOUT_MARKER, TracerouteHopHistory};
+use crate::tui::models::{ERROR_MARKER, PingResult, PingStatus, TracerouteHopHistory};
+
+// NerdFont アイコン定数
+const ERROR_ICON: &str = "\u{2717}";
+const SUCCESS_ICON: &str = "\u{2713}";
+const TIMEOUT_ICON: &str = "\u{f199f}";
 
 fn create_block_chart(value: f64, min_val: f64, max_val: f64) -> char {
     let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -32,13 +37,17 @@ fn create_sparkline_with_timeouts(data: &[f64], max_width: usize) -> String {
     // タイムアウト以外の値のみで正規化用の最小値・最大値を計算
     let valid_values: Vec<f64> = display_data
         .iter()
-        .filter(|&&v| v != TIMEOUT_MARKER)
+        .filter(|&&v| v != ERROR_MARKER)
         .cloned()
         .collect();
 
     if valid_values.is_empty() {
         // 全部タイムアウトの場合
-        return "✗".repeat(display_data.len());
+        return ERROR_ICON
+            .chars()
+            .cycle()
+            .take(display_data.len())
+            .collect();
     }
 
     let min_val = *valid_values
@@ -53,8 +62,8 @@ fn create_sparkline_with_timeouts(data: &[f64], max_width: usize) -> String {
     let mut sparkline = String::new();
 
     for &value in &display_data {
-        if value == TIMEOUT_MARKER {
-            sparkline.push('✗');
+        if value == ERROR_MARKER {
+            sparkline.push_str(ERROR_ICON);
         } else {
             sparkline.push(create_block_chart(value, min_val, max_val));
         }
@@ -74,8 +83,7 @@ pub fn build_table_rows_data(
 
     for (index, result) in ping_results.iter().enumerate() {
         let (status_icon, status_color) = match &result.status {
-            PingStatus::Success => ("✓", Color::Green),
-            PingStatus::Timeout => ("⚠", Color::Yellow),
+            PingStatus::Success => (SUCCESS_ICON, Color::Green),
             PingStatus::NetworkError(network_error) => (network_error.icon(), Color::Red),
         };
 
@@ -114,7 +122,7 @@ pub fn build_table_rows_data(
         } else {
             match &result.status {
                 PingStatus::Success => "-".to_string(),
-                PingStatus::Timeout | PingStatus::NetworkError(_) => "✗".to_string(),
+                PingStatus::NetworkError(_) => "✗".to_string(),
             }
         };
 
@@ -124,16 +132,17 @@ pub fn build_table_rows_data(
             let chart_chars: Vec<char> = chart.chars().collect();
 
             for ch in chart_chars {
-                if ch == '✗' {
+                if ch == ERROR_ICON.chars().next().unwrap() {
                     spans.push(Span::styled(
                         ch.to_string(),
                         Style::default().fg(Color::Red),
                     ));
                 } else {
-                    spans.push(Span::styled(
-                        ch.to_string(),
-                        Style::default().fg(Color::Green),
-                    ));
+                    let color = match &result.status {
+                        PingStatus::Success => Color::Green,
+                        PingStatus::NetworkError(_) => Color::Red,
+                    };
+                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                 }
             }
 
@@ -141,7 +150,7 @@ pub fn build_table_rows_data(
         } else {
             match &result.status {
                 PingStatus::Success => Cell::from(chart).style(Style::default().fg(Color::Green)),
-                PingStatus::Timeout | PingStatus::NetworkError(_) => {
+                PingStatus::NetworkError(_) => {
                     Cell::from(chart).style(Style::default().fg(Color::Red))
                 }
             }
@@ -198,18 +207,51 @@ pub fn build_table_rows_data(
                             };
 
                             (
-                                addr.to_string(),
+                                format!("{} {}", SUCCESS_ICON, addr),
                                 format!("{rtt_ms}ms"),
                                 avg_text,
                                 chart_cell,
                             )
                         }
-                        _ => (
-                            "*".to_string(),
-                            "*".to_string(),
-                            "*".to_string(),
-                            Cell::from("*").style(Style::default().fg(Color::Red)),
-                        ),
+                        _ => {
+                            // 疎通しなかった場合はlatency_historyを使ってチャートを表示
+                            let hop_chart = if !hop.latency_history.is_empty() {
+                                create_sparkline_with_timeouts(&hop.latency_history, chart_width)
+                            } else {
+                                "-".to_string()
+                            };
+
+                            // チャートセルを色分けして作成
+                            let chart_cell = if !hop.latency_history.is_empty() {
+                                let mut spans = Vec::new();
+                                let chart_chars: Vec<char> = hop_chart.chars().collect();
+
+                                for ch in chart_chars {
+                                    if ch == '✗' {
+                                        spans.push(Span::styled(
+                                            ch.to_string(),
+                                            Style::default().fg(Color::Red),
+                                        ));
+                                    } else {
+                                        spans.push(Span::styled(
+                                            ch.to_string(),
+                                            Style::default().fg(Color::Blue),
+                                        ));
+                                    }
+                                }
+
+                                Cell::from(Line::from(spans))
+                            } else {
+                                Cell::from("-").style(Style::default().fg(Color::Gray))
+                            };
+
+                            (
+                                format!("{} *", TIMEOUT_ICON),
+                                "*".to_string(),
+                                "*".to_string(),
+                                chart_cell,
+                            )
+                        }
                     };
 
                 rows.push(Row::new(vec![
