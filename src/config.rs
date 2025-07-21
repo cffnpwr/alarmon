@@ -144,11 +144,6 @@ pub struct Config {
     #[serde(default = "Config::default_timeout")]
     pub timeout: Duration,
 
-    /// 受信パケットを保持するためのバッファのサイズ
-    /// デフォルトは1000パケット
-    #[serde(default = "Config::default_buffer_size")]
-    pub buffer_size: usize,
-
     /// ARP設定
     #[serde(default)]
     pub arp: ArpConfig,
@@ -164,7 +159,6 @@ impl Default for Config {
             targets: Vec::new(),
             interval: Self::default_interval(),
             timeout: Self::default_timeout(),
-            buffer_size: Self::default_buffer_size(),
             arp: ArpConfig::default(),
             traceroute: TracerouteConfig::default(),
         }
@@ -198,11 +192,6 @@ impl Config {
     /// デフォルトのICMP Echoタイムアウト
     const fn default_timeout() -> Duration {
         Duration::seconds(5)
-    }
-
-    /// デフォルトのバッファサイズ
-    const fn default_buffer_size() -> usize {
-        1000
     }
 }
 
