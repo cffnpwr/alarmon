@@ -8,6 +8,7 @@ use libc::{
     SOCK_DGRAM, SOCK_RAW, c_int, c_ulong, close, in_addr, in6_addr, ioctl, rt_msghdr, sockaddr,
     sockaddr_dl, sockaddr_in, sockaddr_in6, socket,
 };
+use log::warn;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
@@ -192,7 +193,13 @@ impl Netlink {
                 io::ErrorKind::AddrNotAvailable => NetlinkError::NoRouteToHost,
                 io::ErrorKind::NetworkUnreachable => NetlinkError::NoRouteToHost,
                 io::ErrorKind::HostUnreachable => NetlinkError::NoRouteToHost,
-                kind => NetlinkError::PfRouteSendError(kind),
+                _ => {
+                    match e.raw_os_error() {
+                        // ESRCHの場合、No Route To Hostとして返す
+                        Some(3) => NetlinkError::NoRouteToHost,
+                        _ => NetlinkError::PfRouteSendError(e.kind()),
+                    }
+                }
             })?;
 
         // PF_ROUTEソケットからの応答を受信
@@ -207,7 +214,13 @@ impl Netlink {
                 io::ErrorKind::AddrNotAvailable => NetlinkError::NoRouteToHost,
                 io::ErrorKind::NetworkUnreachable => NetlinkError::NoRouteToHost,
                 io::ErrorKind::HostUnreachable => NetlinkError::NoRouteToHost,
-                kind => NetlinkError::PfRouteReceiveError(kind),
+                _ => {
+                    match e.raw_os_error() {
+                        // ESRCHの場合、No Route To Hostとして返す
+                        Some(3) => NetlinkError::NoRouteToHost,
+                        _ => NetlinkError::PfRouteReceiveError(e.kind()),
+                    }
+                }
             })?;
 
         self.parse_route_entry_from_rt_msg(&mut rt_msg, recv_len)
@@ -302,7 +315,9 @@ impl Netlink {
                         let dst_addr = Ipv6Addr::from(addr_bytes);
                         route_entry.to = IpAddr::V6(dst_addr);
                     }
-                    _ => unimplemented!("Unsupported address family: {}", sa.sa_family),
+                    _ => {
+                        warn!("Unsupported address family: {}", sa.sa_family)
+                    }
                 },
                 RTAX_GATEWAY => match sa.sa_family as c_int {
                     AF_INET => {
@@ -326,7 +341,9 @@ impl Netlink {
                         route_entry.via = Some(IpAddr::V6(gateway_addr));
                     }
                     AF_LINK => {}
-                    _ => unimplemented!("Unsupported address family: {}", sa.sa_family),
+                    _ => {
+                        warn!("Unsupported address family: {}", sa.sa_family);
+                    }
                 },
                 RTAX_IFP => {
                     let ifp = unsafe { *(sa as *const sockaddr as *const sockaddr_dl) };
