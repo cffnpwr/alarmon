@@ -334,11 +334,8 @@ impl RoutingWorker {
             _ => return, // 他のNetlinkErrorは現在TUIに送信しない
         };
 
-        // エラーをPingUpdateとして送信（destination IPに対応するworkerを探すため）
-        // どのPing/Traceroute WorkerのIDかを特定するのは困難なので、
-        // とりあえずID=0でブロードキャスト的に送信
         let ping_update = PingUpdate {
-            id: 0, // 特定のworker IDが不明なため0を使用
+            id: 0,
             host: destination,
             latency: Err(network_error),
         };
