@@ -37,10 +37,10 @@ pub enum UpdateMessage {
 #[derive(Debug, Clone)]
 pub struct PingUpdate {
     pub id: u16,
-    pub success: bool,
     pub host: IpAddr,
-    pub latency: Option<Duration>,
-    pub error: Option<NetworkErrorType>,
+    /// レイテンシ
+    /// エラーの場合はエラー情報が入る
+    pub latency: Result<Duration, NetworkErrorType>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,6 @@ pub struct TracerouteUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkErrorType {
-    // ICMPエラー
     DestinationUnreachable(DestinationUnreachableCodeV4),
     DestinationUnreachableV6(DestinationUnreachableCodeV6),
     TimeExceeded(TimeExceededCodeV4),
@@ -59,6 +58,8 @@ pub enum NetworkErrorType {
     ParameterProblem,
     Redirect(RedirectCode),
     PacketTooBig(u32),
+    Timeout,
+    NoRouteToHost,
 }
 
 impl NetworkErrorType {
@@ -86,6 +87,8 @@ impl NetworkErrorType {
             NetworkErrorType::ParameterProblem => "❓",
             NetworkErrorType::Redirect(_) => "↩",
             NetworkErrorType::PacketTooBig(_) => "📦",
+            NetworkErrorType::Timeout => "⏳",
+            NetworkErrorType::NoRouteToHost => "🗺️",
         }
     }
 }
@@ -198,10 +201,11 @@ impl AppState {
                 // hostの情報を更新
                 result.host = update.host.to_string();
 
-                if update.success {
-                    result.total_received += 1;
-                    result.status = PingStatus::Success;
-                    if let Some(rtt) = update.latency {
+                match update.latency {
+                    Ok(rtt) => {
+                        // 成功時の処理
+                        result.total_received += 1;
+                        result.status = PingStatus::Success;
                         result.response_time = Some(rtt);
                         result.latency_history.push(rtt.num_milliseconds() as f64);
 
@@ -223,20 +227,25 @@ impl AppState {
                         };
                         result.avg_response_time = Some(Duration::milliseconds(avg as i64));
                     }
-                } else {
-                    result.response_time = None;
-                    // タイムアウト時は履歴にマーカーを追加
-                    result.latency_history.push(TIMEOUT_MARKER);
+                    Err(error) => {
+                        // エラー時の処理
+                        result.response_time = None;
+                        // タイムアウト時は履歴にマーカーを追加
+                        result.latency_history.push(TIMEOUT_MARKER);
 
-                    if result.latency_history.len() > 50 {
-                        result.latency_history.remove(0);
-                    }
+                        if result.latency_history.len() > 50 {
+                            result.latency_history.remove(0);
+                        }
 
-                    // エラー種別の優先順位で設定
-                    if let Some(error) = update.error {
-                        result.status = PingStatus::NetworkError(error);
-                    } else {
-                        result.status = PingStatus::Timeout;
+                        // エラー種別に応じてステータスを設定
+                        match error {
+                            NetworkErrorType::Timeout => {
+                                result.status = PingStatus::Timeout;
+                            }
+                            _ => {
+                                result.status = PingStatus::NetworkError(error);
+                            }
+                        }
                     }
                 }
 
