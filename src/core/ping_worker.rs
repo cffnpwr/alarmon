@@ -421,7 +421,7 @@ impl PingResponseReceiver {
                 None
             })
         {
-            let error_info = crate::tui::models::NetworkErrorType::DestinationUnreachable(code);
+            let error_info = NetworkErrorType::DestinationUnreachable(code);
             if let Err(e) = self
                 .send_error_update_with_info(pending_ping, error_info)
                 .await
