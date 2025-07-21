@@ -16,16 +16,17 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let config = Config::load(&cli.config)?;
+    let log_level = if cli.headless { "info" } else { "error" };
+
     #[cfg(all(debug_assertions, feature = "tokio-console"))]
     console_subscriber::init();
-    env_logger::init_from_env(Env::default().default_filter_or("error"));
+    env_logger::init_from_env(Env::default().default_filter_or(log_level));
     color_eyre::install().map_err(|e| {
         error!("Failed to install color_eyre: {e}");
         anyhow::anyhow!("Failed to install color_eyre")
     })?;
-
-    let cli = Cli::parse();
-    let config = Config::load(&cli.config)?;
 
     // UpdateMessage用のチャネルを作成
     let (update_sender, update_receiver) = mpsc::channel::<UpdateMessage>(1000);
@@ -43,20 +44,24 @@ async fn main() -> Result<()> {
         }
     });
 
-    // TUIタスクを起動
-    let config_for_tui = config.clone();
-    let tui_handle = tokio::spawn(async move {
-        if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
-            let err_msg = format!("Error has occurred in TUI: {e}");
-            ratatui::restore();
-            error!("{err_msg}");
-        }
-    });
+    if cli.headless {
+        let _ = ping_handle.await;
+    } else {
+        // TUIタスクを起動
+        let config_for_tui = config.clone();
+        let tui_handle = tokio::spawn(async move {
+            if let Err(e) = tui::run_tui(token.clone(), update_receiver, &config_for_tui).await {
+                let err_msg = format!("Error has occurred in TUI: {e}");
+                ratatui::restore();
+                error!("{err_msg}");
+            }
+        });
 
-    // どちらかのタスクが終了するまで待機
-    tokio::select! {
-        _ = ping_handle => {},
-        _ = tui_handle => {},
+        // どちらかのタスクが終了するまで待機
+        tokio::select! {
+            _ = ping_handle => {},
+            _ = tui_handle => {},
+        }
     }
 
     Ok(())
