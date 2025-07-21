@@ -13,19 +13,31 @@ use tcpip::ipv4::Protocol;
 #[cfg(target_os = "macos")]
 use tcpip::loopback::{LoopbackFrame, LoopbackFrameError};
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
 use crate::net_utils::arp_table::{ArpTable, ArpTableError};
 use crate::net_utils::neighbor_discovery::{NeighborCache, NeighborDiscoveryError};
 use crate::net_utils::netlink::{LinkType, NetlinkError, NetworkInterface};
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub struct PingTarget {
+    pub id: u16,
+    pub host: IpAddr,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct PingTargets {
+    pub ni: NetworkInterface,
+    pub targets: Vec<PingTarget>,
+}
 
 #[derive(Debug)]
 pub struct PcapWorkerResult {
     pub worker: PcapWorker,
     pub sender: mpsc::Sender<IPPacket>,
-    pub receivers: FxHashMap<IpAddr, broadcast::Receiver<IPPacket>>,
 }
 
 #[derive(Debug, Error)]
@@ -46,18 +58,6 @@ pub enum PcapWorkerError {
     LoopbackFrameError(#[from] LoopbackFrameError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PingTarget {
-    pub(crate) id: u16,
-    pub(crate) host: IpAddr,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PingTargets {
-    pub(crate) ni: NetworkInterface,
-    pub(crate) targets: Vec<PingTarget>,
-}
-
 pub struct DatalinkFrameReceiver {
     /// WorkerがDatalink Frameを受信するNIC
     ni: NetworkInterface,
@@ -65,8 +65,11 @@ pub struct DatalinkFrameReceiver {
     /// NICからDatalink Frameを受信するためのチャネル
     datalink_rx: Box<dyn DataLinkReceiver>,
 
-    /// 上位プロトコルWorkerにIPパケットを送信するためのチャネル群
-    ip_txs: FxHashMap<IpAddr, broadcast::Sender<IPPacket>>,
+    /// Ping Workerへの応答送信用チャネル（IPアドレス別）
+    ping_reply_senders: FxHashMap<IpAddr, mpsc::Sender<IPPacket>>,
+
+    /// Traceroute Workerへの応答送信用チャネル（IPアドレス別）
+    traceroute_reply_senders: FxHashMap<IpAddr, mpsc::Sender<IPPacket>>,
 }
 
 impl std::fmt::Debug for DatalinkFrameReceiver {
@@ -74,7 +77,8 @@ impl std::fmt::Debug for DatalinkFrameReceiver {
         f.debug_struct("DatalinkFrameReceiver")
             .field("ni", &self.ni)
             .field("datalink_rx", &"<DataLinkReceiver>")
-            .field("ip_txs", &self.ip_txs)
+            .field("ping_reply_senders", &self.ping_reply_senders)
+            .field("traceroute_reply_senders", &self.traceroute_reply_senders)
             .finish()
     }
 }
@@ -120,44 +124,36 @@ impl PcapWorker {
     ///
     /// # Arguments
     /// * `token` - Worker停止用のCancellationToken
-    /// * `cfg` - アプリケーションの設定
     /// * `ni` - 使用するネットワークインターフェース
     /// * `arp_table` - ARPテーブル
     /// * `neighbor_cache` - IPv6 Neighbor Discovery cache
-    /// * `target_ips` - 送信先IPアドレスのリスト
+    /// * `ping_reply_senders` - Ping Workerへの応答送信用チャネル
+    /// * `traceroute_reply_senders` - Traceroute Workerへの応答送信用チャネル
     ///
     /// # Returns
-    /// * `Ok((PcapWorker, mpsc::Sender<IPv4Packet>, FxHashMap<Ipv4Addr, mpsc::Receiver<IPv4Packet>>))` - (Pcap Worker, NICへの送信用チャネル, 宛先IPアドレスごとのNICからの受信用チャネル)
+    /// * `Ok(PcapWorkerResult)` - PcapWorkerとその送信チャネル
     /// * `Err(PcapWorkerError)` - エラー
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         token: CancellationToken,
-        cfg: &Config,
         ni: NetworkInterface,
         arp_table: Arc<ArpTable>,
         neighbor_cache: Arc<NeighborCache>,
-        target_ips: impl AsRef<[IpAddr]>,
+        ping_reply_senders: FxHashMap<IpAddr, mpsc::Sender<IPPacket>>,
+        traceroute_reply_senders: FxHashMap<IpAddr, mpsc::Sender<IPPacket>>,
     ) -> Result<PcapWorkerResult, PcapWorkerError> {
         let cap = PcapNetworkInterface::from(&ni).open(false)?;
         let sender: Box<dyn DataLinkSender> = cap.sender;
         let receiver: Box<dyn DataLinkReceiver> = cap.receiver;
 
         // 上位プロトコルWorkerとの通信チャネルを作成
-        let (recv_ip_tx, recv_ip_rx) = mpsc::channel(cfg.buffer_size);
-        let (send_ip_txs, send_ip_rxs) = target_ips.as_ref().iter().fold(
-            (FxHashMap::default(), FxHashMap::default()),
-            |(mut txs, mut rxs), &ip| {
-                let (tx, rx) = broadcast::channel::<IPPacket>(cfg.buffer_size);
-                txs.insert(ip, tx);
-                rxs.insert(ip, rx);
-                (txs, rxs)
-            },
-        );
+        let (recv_ip_tx, recv_ip_rx) = mpsc::channel(1024);
 
         let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: receiver,
-            ip_txs: send_ip_txs,
+            ping_reply_senders: ping_reply_senders.clone(),
+            traceroute_reply_senders: traceroute_reply_senders.clone(),
         };
 
         let sender = DatalinkFrameSender {
@@ -176,7 +172,6 @@ impl PcapWorker {
         Ok(PcapWorkerResult {
             worker,
             sender: recv_ip_tx,
-            receivers: send_ip_rxs,
         })
     }
 
@@ -202,15 +197,44 @@ impl PcapWorker {
 
 impl DatalinkFrameSender {
     async fn listen_ip_packets(mut self) -> Result<(), PcapWorkerError> {
+        debug!(
+            "PcapWorker: Starting to listen for IP packets on interface {}",
+            self.ni.name
+        );
         while let Some(pkt) = self.ip_rx.recv().await {
+            debug!(
+                "PcapWorker: Received IP packet for transmission on interface {}",
+                self.ni.name
+            );
             if let Err(e) = self.handle_recv_ip_packet(pkt).await {
                 warn!("Failed to handle received IP packet: {e}");
             }
         }
+        debug!(
+            "PcapWorker: Stopped listening for IP packets on interface {}",
+            self.ni.name
+        );
         Ok(())
     }
 
     async fn handle_recv_ip_packet(&mut self, pkt: IPPacket) -> Result<(), PcapWorkerError> {
+        let (src_ip, dst_ip, protocol): (IpAddr, IpAddr, String) = match &pkt {
+            IPPacket::V4(ipv4_pkt) => (
+                ipv4_pkt.src.into(),
+                ipv4_pkt.dst.into(),
+                format!("{:?}", ipv4_pkt.protocol),
+            ),
+            IPPacket::V6(ipv6_pkt) => (
+                ipv6_pkt.src.into(),
+                ipv6_pkt.dst.into(),
+                format!("{:?}", ipv6_pkt.next_header),
+            ),
+        };
+        debug!(
+            "PcapWorker: Processing IP packet {} -> {} (protocol: {}) on interface {}",
+            src_ip, dst_ip, protocol, self.ni.name
+        );
+
         let frame = match self.ni.linktype {
             #[cfg(target_os = "macos")]
             LinkType::Loopback => {
@@ -265,7 +289,27 @@ impl DatalinkFrameSender {
         };
 
         // フレームを送信
-        self.datalink_tx.send_bytes(&frame).await?;
+        debug!(
+            "PcapWorker: Sending frame of {} bytes to network on interface {} - first 64 bytes: {:02x?}",
+            frame.len(),
+            self.ni.name,
+            &frame[..std::cmp::min(64, frame.len())]
+        );
+        match self.datalink_tx.send_bytes(&frame).await {
+            Ok(()) => {
+                debug!(
+                    "PcapWorker: Successfully sent frame to network on interface {}",
+                    self.ni.name
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "PcapWorker: Failed to send frame to network on interface {}: {}",
+                    self.ni.name, e
+                );
+                return Err(PcapWorkerError::PcapError(e));
+            }
+        }
 
         Ok(())
     }
@@ -349,15 +393,33 @@ impl DatalinkFrameReceiver {
             IPPacket::V6(ipv6_packet) => ipv6_packet.src.into(),
         };
 
-        // 上位プロトコルWorkerにIPパケットを送信
-        if let Some(tx) = self.ip_txs.get(&src_ip) {
-            // 送信元IPアドレスに対応するWorkerが存在する場合（通常のEcho Reply）
-            let _ = tx.send(ip_packet); // broadcast::send は Result<usize, SendError<T>> を返すが、受信者がいない場合も正常とする
+        // Ping Workerへの直接送信
+        if let Some(reply_sender) = self.ping_reply_senders.get(&src_ip) {
+            // 特定のPing Workerに直接送信（Echo Reply）
+            if let Err(e) = reply_sender.send(ip_packet.clone()).await {
+                debug!("Failed to send ICMP packet to Ping Worker for {src_ip}: {e}");
+            }
         } else {
-            // 送信元IPアドレスに対応するWorkerが存在しない場合（tracerouteのTime Exceededなど）
-            // 全てのWorkerに送信
-            for tx in self.ip_txs.values() {
-                let _ = tx.send(ip_packet.clone());
+            // ICMPエラーメッセージの場合、全てのPing Workerに送信
+            for reply_sender in self.ping_reply_senders.values() {
+                if let Err(e) = reply_sender.send(ip_packet.clone()).await {
+                    debug!("Failed to send ICMP error to Ping Worker: {e}");
+                }
+            }
+        }
+
+        // Traceroute Workerへの直接送信
+        if let Some(reply_sender) = self.traceroute_reply_senders.get(&src_ip) {
+            // 特定のTraceroute Workerに直接送信
+            if let Err(e) = reply_sender.send(ip_packet.clone()).await {
+                debug!("Failed to send ICMP packet to Traceroute Worker for {src_ip}: {e}");
+            }
+        } else {
+            // ICMPエラーメッセージの場合、全てのTraceroute Workerに送信
+            for reply_sender in self.traceroute_reply_senders.values() {
+                if let Err(e) = reply_sender.send(ip_packet.clone()).await {
+                    debug!("Failed to send ICMP error to Traceroute Worker: {e}");
+                }
             }
         }
 
@@ -496,22 +558,17 @@ mod tests {
     fn test_ethernet_frame_receiver() {
         // [正常系] DatalinkFrameReceiverの作成
         let ni = create_test_network_interface();
-        let mut ip_txs = FxHashMap::default();
-        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let (tx, _rx) = broadcast::channel(100);
-        ip_txs.insert(target_ip, tx);
-
         let mock_receiver = Box::new(MockReceiver::new());
 
         let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: mock_receiver,
-            ip_txs,
+            ping_reply_senders: FxHashMap::default(),
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         assert_eq!(receiver.ni.index, ni.index);
         assert_eq!(receiver.ni.name, ni.name);
-        assert!(receiver.ip_txs.contains_key(&target_ip));
     }
 
     #[test]
@@ -539,17 +596,18 @@ mod tests {
     async fn test_ethernet_frame_receiver_handle_recv_ethernet_frame() {
         // [正常系] IPv4 ICMPパケットの処理
         let ni = create_test_network_interface();
-        let mut ip_txs = FxHashMap::default();
-        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let (tx, mut rx) = broadcast::channel(100);
-        ip_txs.insert(target_ip, tx);
-
         let mock_receiver = Box::new(MockReceiver::new());
+        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let (tx, mut rx) = mpsc::channel(1);
+
+        let mut ping_reply_senders = FxHashMap::default();
+        ping_reply_senders.insert(target_ip, tx);
 
         let mut receiver = DatalinkFrameReceiver {
             ni,
             datalink_rx: mock_receiver,
-            ip_txs,
+            ping_reply_senders,
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         // テスト用のICMP Echo Replyパケットを作成
@@ -679,17 +737,19 @@ mod tests {
 
         // [正常系] IPv6 ICMPv6パケットの処理
         let ni_ipv6 = create_test_network_interface_ipv6();
-        let mut ip_txs_ipv6 = FxHashMap::default();
         let target_ip_ipv6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
-        let (tx_ipv6, mut rx_ipv6) = broadcast::channel(100);
-        ip_txs_ipv6.insert(target_ip_ipv6, tx_ipv6);
+        let (tx_ipv6, mut rx_ipv6) = mpsc::channel(1);
 
         let mock_receiver_ipv6 = Box::new(MockReceiver::new());
+
+        let mut ping_reply_senders_ipv6 = FxHashMap::default();
+        ping_reply_senders_ipv6.insert(target_ip_ipv6, tx_ipv6);
 
         let mut receiver_ipv6 = DatalinkFrameReceiver {
             ni: ni_ipv6,
             datalink_rx: mock_receiver_ipv6,
-            ip_txs: ip_txs_ipv6,
+            ping_reply_senders: ping_reply_senders_ipv6,
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         // テスト用のICMPv6 Echo Replyパケットを作成
@@ -806,7 +866,7 @@ mod tests {
         let token = CancellationToken::new();
         let ni = create_test_network_interface();
         let arp_table = Arc::new(ArpTable::new(&ArpConfig::default()));
-        let targets = [IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))];
+        let _targets = [IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))];
 
         let mock_sender = Box::new(MockSender::new());
         let mock_receiver = Box::new(MockReceiver::new());
@@ -821,14 +881,11 @@ mod tests {
             ip_rx: rx,
         };
 
-        let mut ip_txs = FxHashMap::default();
-        let (tx, _rx) = broadcast::channel(100);
-        ip_txs.insert(targets[0], tx);
-
         let receiver = DatalinkFrameReceiver {
             ni: ni.clone(),
             datalink_rx: mock_receiver,
-            ip_txs,
+            ping_reply_senders: FxHashMap::default(),
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         let worker = PcapWorker {
@@ -994,11 +1051,6 @@ mod tests {
     async fn test_ethernet_frame_receiver_listen_ethernet_frames() {
         // [正常系] Ethernetフレーム受信処理のテスト
         let ni = create_test_network_interface();
-        let mut ip_txs = FxHashMap::default();
-        let target_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-        let (tx, _rx) = broadcast::channel(100);
-        ip_txs.insert(target_ip, tx);
-
         let mut mock_receiver = MockReceiver::new();
         mock_receiver
             .expect_recv()
@@ -1008,7 +1060,8 @@ mod tests {
         let receiver = DatalinkFrameReceiver {
             ni,
             datalink_rx: Box::new(mock_receiver),
-            ip_txs,
+            ping_reply_senders: FxHashMap::default(),
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         // 短時間フレーム受信処理を実行
@@ -1022,23 +1075,24 @@ mod tests {
     async fn test_mixed_ipv4_ipv6_packet_handling() {
         // [正常系] IPv4とIPv6パケットの混在処理
         let ni = create_test_network_interface();
-        let mut ip_txs = FxHashMap::default();
 
         // IPv4とIPv6の両方の宛先を設定
         let ipv4_target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let ipv6_target = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
-
-        let (tx4, mut rx4) = broadcast::channel(100);
-        let (tx6, mut rx6) = broadcast::channel(100);
-        ip_txs.insert(ipv4_target, tx4);
-        ip_txs.insert(ipv6_target, tx6);
+        let (tx4, mut rx4) = mpsc::channel(1);
+        let (tx6, mut rx6) = mpsc::channel(1);
 
         let mock_receiver = Box::new(MockReceiver::new());
+
+        let mut ping_reply_senders = FxHashMap::default();
+        ping_reply_senders.insert(ipv4_target, tx4);
+        ping_reply_senders.insert(ipv6_target, tx6);
 
         let mut receiver = DatalinkFrameReceiver {
             ni,
             datalink_rx: mock_receiver,
-            ip_txs,
+            ping_reply_senders,
+            traceroute_reply_senders: FxHashMap::default(),
         };
 
         // IPv4 ICMPパケットを作成

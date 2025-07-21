@@ -1,19 +1,19 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::time::Duration as StdDuration;
 
-use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 use log::{debug, info, warn};
 use tcpip::icmp::{ICMPError, ICMPMessage, TimeExceededCode};
 use tcpip::icmpv6::{ICMPv6Error, ICMPv6Message};
 use tcpip::ip_packet::IPPacket;
-use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
+use tcpip::ipv4::IPv4Packet;
 use tcpip::ipv6::IPv6Packet;
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{interval, timeout};
 use tokio_util::sync::CancellationToken;
 
+use super::routing_worker::{EchoRequest, RoutingWorkerError};
 use crate::net_utils::netlink::NetlinkError;
 use crate::tui::models::{NetworkErrorType, TracerouteHop, TracerouteUpdate, UpdateMessage};
 
@@ -27,6 +27,8 @@ pub enum TracerouteWorkerError {
     ICMPv6Error(#[from] ICMPv6Error),
     #[error(transparent)]
     IPv6Error(#[from] tcpip::ipv6::IPv6Error),
+    #[error(transparent)]
+    RoutingWorkerError(#[from] RoutingWorkerError),
     #[error("Channel send error")]
     ChannelSendError,
 }
@@ -64,18 +66,16 @@ pub struct TracerouteWorker {
     token: CancellationToken,
     /// ICMP Echo Requestの送信元識別子
     identifier: u16,
-    /// 送信元IPアドレス
-    src: IpAddr,
     /// 宛先IPアドレス
     target: IpAddr,
     /// traceroute実行間隔
     interval: Duration,
     /// 最大ホップ数
     max_hops: u8,
-    /// IPパケットを送信するためのチャネル
-    tx: mpsc::Sender<IPPacket>,
+    /// (宛先IP, ICMP Echo Request)のタプルを送信するためのチャネル
+    tx: mpsc::Sender<(IpAddr, EchoRequest)>,
     /// IPパケットを受信するためのチャネル
-    rx: broadcast::Receiver<IPPacket>,
+    rx: mpsc::Receiver<IPPacket>,
     /// UpdateMessage送信用チャネル
     update_tx: mpsc::Sender<UpdateMessage>,
 }
@@ -85,18 +85,16 @@ impl TracerouteWorker {
     pub fn new(
         token: CancellationToken,
         id: u16,
-        src: IpAddr,
         target: IpAddr,
         interval: Duration,
         max_hops: u8,
-        tx: mpsc::Sender<IPPacket>,
-        rx: broadcast::Receiver<IPPacket>,
+        tx: mpsc::Sender<(IpAddr, EchoRequest)>,
+        rx: mpsc::Receiver<IPPacket>,
         update_tx: mpsc::Sender<UpdateMessage>,
     ) -> Self {
         Self {
             token,
             identifier: id,
-            src,
             target,
             interval,
             max_hops,
@@ -214,87 +212,35 @@ impl TracerouteWorker {
     ) -> Result<TracerouteResponse, TracerouteWorkerError> {
         let sent_at = Utc::now();
 
-        match (self.src, self.target) {
-            (IpAddr::V4(src_v4), IpAddr::V4(target_v4)) => {
-                self.send_ipv4_traceroute(src_v4, target_v4, ttl, sent_at)
-                    .await
-            }
-            (IpAddr::V6(src_v6), IpAddr::V6(target_v6)) => {
-                self.send_ipv6_traceroute(src_v6, target_v6, ttl, sent_at)
-                    .await
-            }
-            _ => {
-                Err(TracerouteWorkerError::ChannelSendError) // IP版本不匹配
-            }
-        }
-    }
-
-    async fn send_ipv4_traceroute(
-        &mut self,
-        src: Ipv4Addr,
-        target: Ipv4Addr,
-        ttl: u8,
-        sent_at: DateTime<Utc>,
-    ) -> Result<TracerouteResponse, TracerouteWorkerError> {
         // ICMP Echo Requestを作成
-        let icmp_msg = ICMPMessage::echo_request(self.identifier, ttl as u16, vec![0; 32]);
-        let icmp_bytes: Bytes = icmp_msg.into();
+        let echo_req = match self.target {
+            IpAddr::V4(_) => EchoRequest::V4 {
+                message: tcpip::icmp::EchoMessage::new_request(
+                    self.identifier,
+                    ttl as u16,
+                    vec![0; 32],
+                ),
+                ttl: Some(ttl), // Tracerouteでは指定されたTTL値を使用
+            },
+            IpAddr::V6(target) => EchoRequest::V6 {
+                message: tcpip::icmpv6::EchoMessage::new_request(
+                    self.identifier,
+                    ttl as u16,
+                    vec![0; 32],
+                    std::net::Ipv6Addr::UNSPECIFIED, // 送信時に書き換える
+                    target,
+                ),
+                ttl: Some(ttl), // Tracerouteでは指定されたTTL値を使用
+            },
+        };
 
-        // IPv4パケットを作成
-        let pkt = IPv4Packet::new(
-            TypeOfService::default(),
-            self.identifier,
-            Flags::default(),
-            0,
-            ttl,
-            Protocol::ICMP,
-            src,
-            target,
-            Vec::new(),
-            icmp_bytes,
-        );
-
-        // パケットを送信
+        // (宛先IP, ICMP Echo Request)のタプルを送信
         self.tx
-            .send(IPPacket::V4(pkt))
+            .send((self.target, echo_req))
             .await
             .map_err(|_| TracerouteWorkerError::ChannelSendError)?;
 
-        debug!("Sent ICMP Echo Request with TTL {ttl} to {target}");
-
-        // 応答を待機（タイムアウト付き）
-        let timeout_duration = StdDuration::from_secs(3);
-
-        match timeout(timeout_duration, self.wait_for_response(ttl, sent_at)).await {
-            Ok(Ok(Some(response))) => Ok(response),
-            Ok(Ok(None)) => Ok(TracerouteResponse::Timeout { ttl }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Ok(TracerouteResponse::Timeout { ttl }),
-        }
-    }
-
-    async fn send_ipv6_traceroute(
-        &mut self,
-        src: Ipv6Addr,
-        target: Ipv6Addr,
-        ttl: u8,
-        sent_at: DateTime<Utc>,
-    ) -> Result<TracerouteResponse, TracerouteWorkerError> {
-        // ICMPv6 Echo Requestを作成
-        let icmpv6_msg =
-            ICMPv6Message::echo_request(self.identifier, ttl as u16, vec![0; 32], src, target);
-        let icmpv6_bytes: Bytes = icmpv6_msg.into();
-
-        // IPv6パケットを作成、Hop LimitをTTLとして使用
-        let pkt = IPv6Packet::new(0, 0, Protocol::IPv6ICMP, ttl, src, target, icmpv6_bytes)?;
-
-        // パケットを送信
-        self.tx
-            .send(IPPacket::V6(pkt))
-            .await
-            .map_err(|_| TracerouteWorkerError::ChannelSendError)?;
-
-        debug!("Sent ICMPv6 Echo Request with Hop Limit {ttl} to {target}");
+        debug!("Sent ICMP Echo Request with TTL {ttl} to {}", self.target);
 
         // 応答を待機（タイムアウト付き）
         let timeout_duration = StdDuration::from_secs(3);
@@ -318,7 +264,7 @@ impl TracerouteWorker {
                 _ = self.token.cancelled() => {
                     return Ok(None);
                 }
-                Ok(ip_pkt) = self.rx.recv() => {
+                Some(ip_pkt) = self.rx.recv() => {
                     let received_at = Utc::now();
                     if let Some(response) = self.process_received_packet(ip_pkt, expected_ttl, sent_at, received_at)? {
                         return Ok(Some(response));
@@ -643,7 +589,7 @@ mod tests {
     use bytes::Bytes;
     use tcpip::icmp::{DestinationUnreachableCode, ICMPMessage, TimeExceededCode};
     use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
-    use tokio::sync::{broadcast, mpsc};
+    use tokio::sync::mpsc;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
@@ -668,23 +614,20 @@ mod tests {
         assert_eq!(hop_info.rtt, Some(Duration::milliseconds(10)));
     }
 
-    #[test]
-    fn test_traceroute_worker_new() {
+    #[tokio::test]
+    async fn test_traceroute_worker_new() {
         // [正常系] TracerouteWorkerの作成
         let token = CancellationToken::new();
-        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = Duration::seconds(1);
         let max_hops = 30;
         let (tx, _rx1) = mpsc::channel(100);
-        let (_tx2, rx) = broadcast::channel(100);
+        let rx = mpsc::channel(100).1;
 
         let (update_tx, _update_rx) = mpsc::channel(100);
-        let traceroute_worker = TracerouteWorker::new(
-            token, 12345, src, target, interval, max_hops, tx, rx, update_tx,
-        );
+        let traceroute_worker =
+            TracerouteWorker::new(token, 12345, target, interval, max_hops, tx, rx, update_tx);
 
-        assert_eq!(traceroute_worker.src, src);
         assert_eq!(traceroute_worker.target, target);
         assert_eq!(traceroute_worker.interval, interval);
     }
@@ -693,18 +636,16 @@ mod tests {
     async fn test_traceroute_worker_run() {
         // [正常系] TracerouteWorkerの実行とキャンセレーション
         let token = CancellationToken::new();
-        let src = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
         let target = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let interval = chrono::Duration::seconds(1);
         let max_hops = 3;
         let (tx, _rx1) = mpsc::channel(100);
-        let (_tx2, rx) = broadcast::channel(100);
+        let rx = mpsc::channel(100).1;
 
         let (update_tx, _update_rx) = mpsc::channel(100);
         let traceroute_worker = TracerouteWorker::new(
             token.clone(),
             12345,
-            src,
             target,
             interval,
             max_hops,
@@ -731,12 +672,11 @@ mod tests {
         let interval = Duration::seconds(1);
         let max_hops = 30;
         let (tx, _rx1) = mpsc::channel(100);
-        let (_tx2, rx) = broadcast::channel(100);
+        let rx = mpsc::channel(100).1;
 
         let (update_tx, _update_rx) = mpsc::channel(100);
-        let worker = TracerouteWorker::new(
-            token, 12345, src, target, interval, max_hops, tx, rx, update_tx,
-        );
+        let worker =
+            TracerouteWorker::new(token, 12345, target, interval, max_hops, tx, rx, update_tx);
         let sent_at = Utc::now() - Duration::milliseconds(100);
         let expected_ttl = 3;
 
