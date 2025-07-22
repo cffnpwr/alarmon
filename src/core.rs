@@ -19,7 +19,7 @@ pub mod routing_worker;
 pub mod traceroute_worker;
 pub mod worker_pool;
 
-pub async fn run_ping_monitoring(
+pub(crate) async fn run_ping_monitoring(
     token: CancellationToken,
     config: &Config,
     update_sender: mpsc::Sender<UpdateMessage>,

@@ -17,7 +17,7 @@ pub(crate) enum ConfigError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TargetHost {
+pub(crate) enum TargetHost {
     IpAddress(IpAddr),
     Domain(String),
 }
@@ -51,16 +51,16 @@ impl<'de> Deserialize<'de> for TargetHost {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Target {
+pub(crate) struct Target {
     /// 監視対象のID
     #[serde(default)]
-    pub id: u16,
+    pub(crate) id: u16,
 
     /// 対象の表示名
-    pub name: String,
+    pub(crate) name: String,
 
     /// 対象のホスト名またはIPアドレス
-    pub host: TargetHost,
+    pub(crate) host: TargetHost,
 }
 
 #[serde_as]
@@ -128,29 +128,29 @@ impl Default for TracerouteConfig {
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Config {
+pub(crate) struct Config {
     /// 監視対象のリスト
-    pub targets: Vec<Target>,
+    pub(crate) targets: Vec<Target>,
 
     /// ICMP Echoの送信間隔(秒)
     /// デフォルトは1秒
     #[serde_as(as = "DurationSeconds<i64>")]
     #[serde(default = "Config::default_interval")]
-    pub interval: Duration,
+    pub(crate) interval: Duration,
 
     /// ICMP Echoのタイムアウト(秒)
     /// デフォルトは5秒
     #[serde_as(as = "DurationSeconds<i64>")]
     #[serde(default = "Config::default_timeout")]
-    pub timeout: Duration,
+    pub(crate) timeout: Duration,
 
     /// ARP設定
     #[serde(default)]
-    pub arp: ArpConfig,
+    pub(crate) arp: ArpConfig,
 
     /// Traceroute設定
     #[serde(default)]
-    pub traceroute: TracerouteConfig,
+    pub(crate) traceroute: TracerouteConfig,
 }
 
 impl Default for Config {
@@ -165,7 +165,7 @@ impl Default for Config {
     }
 }
 impl Config {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+    pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let content = fs::read_to_string(path)
             .map_err(|e| ConfigError::LoadFileError(path.to_path_buf(), e.kind()))?;
