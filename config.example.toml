@@ -7,6 +7,12 @@ targets = [
   { name = "Cloudflare Secondary DNS (IPv4)", host = "1.0.0.1" },
   { name = "Google Primary DNS (IPv4)", host = "8.8.8.8" },
   { name = "Google Secondary DNS (IPv4)", host = "8.8.4.4" },
+  { name = "Open DNS Primary DNS (IPv4)", host = "208.67.222.222" },
+  { name = "Open DNS Secondary DNS (IPv4)", host = "208.67.220.220" },
+  { name = "Quad9 Primary DNS (IPv4)", host = "9.9.9.9" },
+  { name = "Quad9 Secondary DNS (IPv4)", host = "149.112.112.112" },
+  { name = "TMCIT internal DNS 品川 (IPv4)", host = "172.24.2.51" },
+  { name = "TMCIT internal DNS 荒川 (IPv4)", host = "172.16.4.51" },
   { name = "RawIP Target (IPv4) (Tailscale DNS)", host = "100.100.100.100" },
   { name = "invalid (IPv4)", host = "123.45.67.89" },
 
@@ -16,6 +22,10 @@ targets = [
   { name = "Cloudflare Secondary DNS (IPv6)", host = "2606:4700:4700::1001" },
   { name = "Google Primary DNS (IPv6)", host = "2001:4860:4860::8888" },
   { name = "Google Secondary DNS (IPv6)", host = "2001:4860:4860::8844" },
+  { name = "Open DNS Primary DNS (IPv6)", host = "2620:119:35::35" },
+  { name = "Open DNS Secondary DNS (IPv6)", host = "2620:119:53::53" },
+  { name = "Quad9 Primary DNS (IPv6)", host = "2620:fe::fe" },
+  { name = "Quad9 Secondary DNS (IPv6)", host = "2620:fe::9" },
   { name = "RawIP Target (IPv6) (Tailscale Node)", host = "fd7a:115c:a1e0::ad35:e40b" },
   { name = "invalid (IPv6)", host = "2001:db8::1234" },
 ]
