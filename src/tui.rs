@@ -1,18 +1,18 @@
 use color_eyre::Result;
-use ratatui::DefaultTerminal;
-
-pub mod events;
-pub mod models;
-pub mod table;
-pub mod ui;
-
 use events::{EventHandler, handle_key_event};
 use models::{AppState, Event, UpdateMessage};
+use ratatui::DefaultTerminal;
+use renderer::render;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use ui::render;
 
-pub async fn run_tui(
+pub(crate) mod components;
+pub(crate) mod events;
+pub(crate) mod models;
+pub(crate) mod renderer;
+pub(crate) mod styles;
+
+pub(crate) async fn run_tui(
     token: CancellationToken,
     update_receiver: mpsc::Receiver<UpdateMessage>,
     config: &crate::config::Config,

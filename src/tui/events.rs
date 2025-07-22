@@ -80,7 +80,7 @@ pub fn handle_key_event(
             event_sender.send(Event::Render).unwrap();
         }
         KeyCode::Char('r') | KeyCode::Char('R') => {
-            // refresh機能は現在未実装
+            // リフレッシュ機能は現在未実装
         }
         _ => {}
     }
