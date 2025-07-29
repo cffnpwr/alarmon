@@ -88,7 +88,7 @@ impl NetworkInterface {
     /// グローバルユニキャストIPv6アドレスの中から最適なソースアドレスを選択
     /// RFC 6724のSource Address Selection規則に基づいて優先順位を決定
     pub fn get_best_source_ipv6(&self, destination: &Ipv6Addr) -> Option<Ipv6Addr> {
-        // 1. 全IPv6アドレスのフラグを取得
+        // 全IPv6アドレスのフラグを取得
         let mut candidates: Vec<IPv6AddressInfo> = self
             .ip_addrs
             .iter()
@@ -110,11 +110,11 @@ impl NetworkInterface {
             return None;
         }
 
-        // 2. RFC 6724でソート
+        // RFC 6724でソート
         candidates.sort_by(|a, b| self.compare_ipv6(a, b, destination));
 
-        // 3. 先頭を返す
-        Some(candidates[0].address)
+        // 先頭を返す
+        candidates.first().map(|info| info.address)
     }
 
     fn compare_ipv6(&self, a: &IPv6AddressInfo, b: &IPv6AddressInfo, dest: &Ipv6Addr) -> Ordering {
