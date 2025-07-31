@@ -41,7 +41,7 @@ impl NetworkInterface {
         #[cfg(target_os = "linux")]
         if self.linktype == LinkType::Loopback {
             // Linuxかつループバックインターフェースを使用する場合は、ターゲットIPアドレスをそのまま返す
-            return Ok(*ping_target);
+            return Some(*target_ip);
         }
 
         match target_ip {
@@ -163,6 +163,11 @@ impl NetworkInterface {
         }
 
         common_bits
+    }
+
+    /// IPv6アドレスの中から優先度の高いものを取得
+    pub fn get_preferred_ipv6_address(&self) -> Option<Ipv6Addr> {
+        self.get_best_source_ipv6(&Ipv6Addr::UNSPECIFIED)
     }
 }
 

@@ -1,4 +1,6 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+#[cfg(test)]
+use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::num::NonZeroI32;
 
 use futures::future::{self, Either};
@@ -6,6 +8,7 @@ use futures::{FutureExt, StreamExt as _, TryStream, TryStreamExt};
 use netlink_packet_core::NLM_F_REQUEST;
 use netlink_packet_route::link::LinkLayerType;
 use netlink_packet_route::route::{RouteAddress, RouteAttribute};
+use nix::libc::{EHOSTUNREACH, ENETUNREACH, ENODEV, ENOENT};
 use rtnetlink::packet_core::NetlinkMessage;
 use rtnetlink::packet_route::RouteNetlinkMessage;
 use rtnetlink::packet_route::route::{RouteMessage, RouteProtocol, RouteScope, RouteType};
@@ -39,6 +42,7 @@ impl Netlink {
         let builder = RouteMessageBuilder::<IpAddr>::new();
         let req_msg = builder
             .destination_prefix(target_ip, prefix_length)
+            .map_err(|_| NetlinkError::NoRouteToHost)?
             .table_id(0)
             .protocol(RouteProtocol::Unspec)
             .scope(RouteScope::Universe)
@@ -55,10 +59,10 @@ impl Netlink {
                 };
                 match err_msg.code.map(|c| c.get()) {
                     Some(code) => match code {
-                        nix::libc::ENOENT => NetlinkError::NoRouteToHost,
-                        nix::libc::ENETUNREACH => NetlinkError::NoRouteToHost,
-                        nix::libc::EHOSTUNREACH => NetlinkError::NoRouteToHost,
-                        nix::libc::ENODEV => NetlinkError::NoSuchInterfaceIdx(0),
+                        ENOENT => NetlinkError::NoRouteToHost,
+                        ENETUNREACH => NetlinkError::NoRouteToHost,
+                        EHOSTUNREACH => NetlinkError::NoRouteToHost,
+                        ENODEV => NetlinkError::NoSuchInterfaceIdx(0),
                         _ => NetlinkError::RTNetlinkError(e),
                     },
                     _ => NetlinkError::RTNetlinkError(e),
@@ -129,21 +133,6 @@ impl Netlink {
         Ok(entry)
     }
 
-    /// IPv6グローバルユニキャストアドレスが存在するかチェック
-    fn has_global_unicast_ipv6_address(&self) -> Result<bool, NetlinkError> {
-        let interfaces = self.get_interfaces()?;
-
-        for interface in interfaces {
-            if let Some(preferred_addr) = interface.get_preferred_ipv6_address() {
-                if preferred_addr.is_global_unicast() {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
-    }
-
     async fn get_linktype_from_index(&self, index: u32) -> Result<LinkType, NetlinkError> {
         let mut links = self.handle.link().get().match_index(index).execute();
         let link = links
@@ -168,6 +157,16 @@ impl Netlink {
                 link.header.link_layer_type,
             )),
         }
+    }
+}
+
+impl NetworkInterface {
+    pub(super) fn get_ipv6_flags(&self, _addr: Ipv6Addr) -> Result<IPv6AddressFlags, NetlinkError> {
+        // TODO: netlink RTM_GETADDR実装
+        Ok(IPv6AddressFlags {
+            deprecated: false,
+            temporary: false,
+        })
     }
 }
 
@@ -216,11 +215,11 @@ mod tests {
         let mut netlink = Netlink::new().await?;
 
         // ローカルホストへのルート取得をテスト
-        let target_ip = Ipv4Addr::new(127, 0, 0, 1);
+        let target_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
         let result = netlink.get_route(target_ip).await;
         assert!(result.is_ok());
         let route_entry = result.unwrap();
-        assert_eq!(route_entry.to, IpAddr::V4(target_ip));
+        assert_eq!(route_entry.to, target_ip);
         assert!(!route_entry.interface.name.is_empty());
 
         Ok(())
@@ -234,14 +233,14 @@ mod tests {
         let interfaces = netlink.get_interfaces()?;
         if let Some(_test_interface) = interfaces.first() {
             // RouteMessageを直接構築するのではなく、実際のネットワーク操作をテスト
-            let target_ip = Ipv4Addr::new(127, 0, 0, 1);
+            let target_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
             let mut test_netlink = Netlink::new().await?;
             let route_result = test_netlink.get_route(target_ip).await;
 
             // ルート取得が成功することを確認
             assert!(route_result.is_ok());
             let route_entry = route_result.unwrap();
-            assert_eq!(route_entry.to, IpAddr::V4(target_ip));
+            assert_eq!(route_entry.to, target_ip);
             assert!(!route_entry.interface.name.is_empty());
         }
 
@@ -268,15 +267,5 @@ mod tests {
         assert_eq!(req_msg.header.kind, RouteType::Unspec);
 
         Ok(())
-    }
-}
-
-impl NetworkInterface {
-    pub(super) fn get_ipv6_flags(&self, _addr: Ipv6Addr) -> Result<IPv6AddressFlags, NetlinkError> {
-        // TODO: netlink RTM_GETADDR実装
-        Ok(IPv6AddressFlags {
-            deprecated: false,
-            temporary: false,
-        })
     }
 }

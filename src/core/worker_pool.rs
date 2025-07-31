@@ -13,8 +13,6 @@ use crate::config::Config;
 use crate::core::ping_worker::PingWorker;
 use crate::net_utils::arp_table::ArpTable;
 use crate::net_utils::neighbor_discovery::NeighborCache;
-#[cfg(target_os = "linux")]
-use crate::net_utils::netlink::LinkType;
 use crate::net_utils::netlink::NetlinkError;
 use crate::tui::models::UpdateMessage;
 

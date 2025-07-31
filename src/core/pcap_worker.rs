@@ -8,8 +8,11 @@ use libc::{AF_INET, AF_INET6};
 use log::{debug, info, warn};
 use pcap::{DataLinkReceiver, DataLinkSender, NetworkInterface as PcapNetworkInterface, Pcap as _};
 use tcpip::ethernet::{EtherType, EthernetFrame, EthernetFrameError};
+use tcpip::icmp::ICMPMessage;
+use tcpip::icmpv6::ICMPv6Message;
 use tcpip::ip_packet::IPPacket;
-use tcpip::ipv4::Protocol;
+use tcpip::ipv4::{Flags, IPv4Packet, Protocol, TypeOfService};
+use tcpip::ipv6::IPv6Packet;
 #[cfg(target_os = "macos")]
 use tcpip::loopback::{LoopbackFrame, LoopbackFrameError};
 use thiserror::Error;
@@ -56,6 +59,10 @@ pub enum PcapWorkerError {
     #[cfg(target_os = "macos")]
     #[error(transparent)]
     LoopbackFrameError(#[from] LoopbackFrameError),
+    #[error(transparent)]
+    IPv6Error(#[from] tcpip::ipv6::IPv6Error),
+    #[error("Echo reply send failed")]
+    EchoReplySendFailed,
 }
 
 pub struct DatalinkFrameReceiver {
@@ -70,16 +77,25 @@ pub struct DatalinkFrameReceiver {
 
     /// Traceroute Workerへの応答送信用チャネル（IPアドレス別）
     traceroute_reply_senders: FxHashMap<IpAddr, mpsc::Sender<IPPacket>>,
+
+    /// IPパケット送信用チャネル（Linux echo reply生成のため）
+    #[cfg(target_os = "linux")]
+    ip_tx: mpsc::Sender<IPPacket>,
 }
 
 impl std::fmt::Debug for DatalinkFrameReceiver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DatalinkFrameReceiver")
+        let mut debug_struct = f.debug_struct("DatalinkFrameReceiver");
+        debug_struct
             .field("ni", &self.ni)
             .field("datalink_rx", &"<DataLinkReceiver>")
             .field("ping_reply_senders", &self.ping_reply_senders)
-            .field("traceroute_reply_senders", &self.traceroute_reply_senders)
-            .finish()
+            .field("traceroute_reply_senders", &self.traceroute_reply_senders);
+
+        #[cfg(target_os = "linux")]
+        debug_struct.field("ip_tx", &"<mpsc::Sender>");
+
+        debug_struct.finish()
     }
 }
 
@@ -154,6 +170,8 @@ impl PcapWorker {
             datalink_rx: receiver,
             ping_reply_senders: ping_reply_senders.clone(),
             traceroute_reply_senders: traceroute_reply_senders.clone(),
+            #[cfg(target_os = "linux")]
+            ip_tx: recv_ip_tx.clone(),
         };
 
         let sender = DatalinkFrameSender {
@@ -387,6 +405,15 @@ impl DatalinkFrameReceiver {
             return Ok(());
         }
 
+        // Linux環境でループバック用Echo Reply自動生成処理
+        #[cfg(target_os = "linux")]
+        if self.ni.linktype == LinkType::Loopback {
+            if let Err(e) = self.handle_linux_loopback_echo_reply(&ip_packet).await {
+                debug!("Failed to handle Linux loopback echo reply: {e}");
+                // エラーが発生しても通常の処理を続行
+            }
+        }
+
         // 送信元IPアドレスを取得
         let src_ip = match &ip_packet {
             IPPacket::V4(ipv4_packet) => ipv4_packet.src.into(),
@@ -423,6 +450,137 @@ impl DatalinkFrameReceiver {
             }
         }
 
+        Ok(())
+    }
+
+    /// Linux環境でのループバック用Echo Reply自動生成処理
+    #[cfg(target_os = "linux")]
+    async fn handle_linux_loopback_echo_reply(
+        &mut self,
+        ip_packet: &IPPacket,
+    ) -> Result<(), PcapWorkerError> {
+        match ip_packet {
+            IPPacket::V4(ipv4_packet) => self.handle_ipv4_echo_reply(ipv4_packet).await,
+            IPPacket::V6(ipv6_packet) => self.handle_ipv6_echo_reply(ipv6_packet).await,
+        }
+    }
+
+    /// IPv4 ICMP Echo RequestをEcho Replyに変換して送信
+    #[cfg(target_os = "linux")]
+    async fn handle_ipv4_echo_reply(
+        &mut self,
+        ipv4_packet: &IPv4Packet,
+    ) -> Result<(), PcapWorkerError> {
+        // ICMPメッセージを解析
+        let icmp_msg = match ICMPMessage::try_from(&ipv4_packet.payload) {
+            Ok(msg) => msg,
+            Err(_) => return Ok(()), // 解析失敗時は無視
+        };
+
+        // Echo Requestかどうかチェック
+        let echo_req = match icmp_msg {
+            ICMPMessage::Echo(echo_msg) => echo_msg,
+            _ => return Ok(()), // Echo Request以外は無視
+        };
+
+        // 送信元と宛先が同じかチェック（loopback condition）
+        if ipv4_packet.src != ipv4_packet.dst {
+            return Ok(()); // 送信元と宛先が異なる場合は処理しない
+        }
+
+        debug!(
+            "Linux Loopback: Generating Echo Reply for IPv4 ICMP Echo Request (id={}, seq={})",
+            echo_req.identifier, echo_req.sequence_number
+        );
+
+        // Echo Replyを作成
+        let echo_reply = ICMPMessage::echo_reply(
+            echo_req.identifier,
+            echo_req.sequence_number,
+            echo_req.data.clone(),
+        );
+        let icmp_bytes: Bytes = echo_reply.into();
+
+        // IPv4パケットを作成（送信元と宛先を入れ替え）
+        let reply_packet = IPv4Packet::new(
+            TypeOfService::default(),
+            0, // identification
+            Flags::default(),
+            0,  // fragment_offset
+            64, // ttl
+            Protocol::ICMP,
+            ipv4_packet.dst, // 送信元と宛先を入れ替え
+            ipv4_packet.src,
+            Vec::new(), // options
+            icmp_bytes,
+        );
+
+        // IPパケットとして送信
+        self.ip_tx
+            .send(IPPacket::V4(reply_packet))
+            .await
+            .map_err(|_| PcapWorkerError::EchoReplySendFailed)?;
+
+        debug!("Linux Loopback: Successfully sent IPv4 Echo Reply");
+        Ok(())
+    }
+
+    /// IPv6 ICMPv6 Echo RequestをEcho Replyに変換して送信
+    #[cfg(target_os = "linux")]
+    async fn handle_ipv6_echo_reply(
+        &mut self,
+        ipv6_packet: &IPv6Packet,
+    ) -> Result<(), PcapWorkerError> {
+        // ICMPv6メッセージを解析
+        let icmpv6_msg = match ICMPv6Message::try_from(&ipv6_packet.payload) {
+            Ok(msg) => msg,
+            Err(_) => return Ok(()), // 解析失敗時は無視
+        };
+
+        // Echo Requestかどうかチェック
+        let echo_req = match icmpv6_msg {
+            ICMPv6Message::EchoRequest(echo_msg) => echo_msg,
+            _ => return Ok(()), // Echo Request以外は無視
+        };
+
+        // 送信元と宛先が同じかチェック（loopback condition）
+        if ipv6_packet.src != ipv6_packet.dst {
+            return Ok(()); // 送信元と宛先が異なる場合は処理しない
+        }
+
+        debug!(
+            "Linux Loopback: Generating Echo Reply for IPv6 ICMPv6 Echo Request (id={}, seq={})",
+            echo_req.identifier, echo_req.sequence_number
+        );
+
+        // Echo Replyを作成
+        let echo_reply = ICMPv6Message::echo_reply(
+            echo_req.identifier,
+            echo_req.sequence_number,
+            echo_req.data.clone(),
+            ipv6_packet.dst, // 送信元と宛先を入れ替え
+            ipv6_packet.src,
+        );
+        let icmpv6_bytes: Bytes = echo_reply.into();
+
+        // IPv6パケットを作成（送信元と宛先を入れ替え）
+        let reply_packet = IPv6Packet::new(
+            0, // traffic_class
+            0, // flow_label
+            Protocol::IPv6ICMP,
+            64,              // hop_limit
+            ipv6_packet.dst, // 送信元と宛先を入れ替え
+            ipv6_packet.src,
+            icmpv6_bytes,
+        )?;
+
+        // IPパケットとして送信
+        self.ip_tx
+            .send(IPPacket::V6(reply_packet))
+            .await
+            .map_err(|_| PcapWorkerError::EchoReplySendFailed)?;
+
+        debug!("Linux Loopback: Successfully sent IPv6 Echo Reply");
         Ok(())
     }
 }
@@ -565,6 +723,8 @@ mod tests {
             datalink_rx: mock_receiver,
             ping_reply_senders: FxHashMap::default(),
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         assert_eq!(receiver.ni.index, ni.index);
@@ -608,6 +768,8 @@ mod tests {
             datalink_rx: mock_receiver,
             ping_reply_senders,
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         // テスト用のICMP Echo Replyパケットを作成
@@ -750,6 +912,8 @@ mod tests {
             datalink_rx: mock_receiver_ipv6,
             ping_reply_senders: ping_reply_senders_ipv6,
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         // テスト用のICMPv6 Echo Replyパケットを作成
@@ -886,6 +1050,8 @@ mod tests {
             datalink_rx: mock_receiver,
             ping_reply_senders: FxHashMap::default(),
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         let worker = PcapWorker {
@@ -1062,6 +1228,8 @@ mod tests {
             datalink_rx: Box::new(mock_receiver),
             ping_reply_senders: FxHashMap::default(),
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         // 短時間フレーム受信処理を実行
@@ -1093,6 +1261,8 @@ mod tests {
             datalink_rx: mock_receiver,
             ping_reply_senders,
             traceroute_reply_senders: FxHashMap::default(),
+            #[cfg(target_os = "linux")]
+            ip_tx: mpsc::channel(1).0,
         };
 
         // IPv4 ICMPパケットを作成
